@@ -47,10 +47,20 @@ type Router struct {
 	httpClient *http.Client
 }
 
+// Add configuration options for WebSocket
+type WebSocketConfig struct {
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	PingInterval   time.Duration
+	MaxMessageSize int64
+	BufferSize     int // Buffer sizes for read/write
+}
+
 type Config struct {
 	NotFoundHandler HandlerFunc
 	ErrorHandler    func(*Context, error)
 	Upgrader        *websocket.Upgrader
+	WebSocket       *WebSocketConfig
 }
 
 type childNode struct {
@@ -128,8 +138,16 @@ func (vc *ValidationChain) IsInt() *ValidationChain {
 // Router Initialization
 func New() *Router {
 	r := &Router{
-		trees:  make(map[string]*node),
-		config: &Config{},
+		trees: make(map[string]*node),
+		config: &Config{
+			WebSocket: &WebSocketConfig{
+				ReadTimeout:    60 * time.Second,
+				WriteTimeout:   10 * time.Second,
+				PingInterval:   30 * time.Second,
+				MaxMessageSize: 1024 * 1024, // 1MB
+				BufferSize:     1024,
+			},
+		},
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
@@ -148,7 +166,9 @@ func New() *Router {
 		}
 	}
 	r.config.Upgrader = &websocket.Upgrader{
-		CheckOrigin: func(*http.Request) bool { return true },
+		CheckOrigin:     func(*http.Request) bool { return true },
+		ReadBufferSize:  r.config.WebSocket.BufferSize,
+		WriteBufferSize: r.config.WebSocket.BufferSize,
 	}
 	return r
 }
@@ -791,15 +811,97 @@ func (c *Context) CheckValidation() bool {
 	return true
 }
 
+// Improved WebSocket handler wrapper with proper lifecycle management
 func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
 	return func(ctx *Context) {
+		// Upgrade the connection
 		conn, err := r.config.Upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 		if err != nil {
 			http.Error(ctx.Writer, "Failed to upgrade to WebSocket", http.StatusBadRequest)
 			return
 		}
-		defer conn.Close()
+
+		// Set connection parameters
+		conn.SetReadLimit(r.config.WebSocket.MaxMessageSize)
+
+		// Create a cancelable context for the WebSocket connection
+		wsCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create a WaitGroup to ensure all goroutines are done before returning
+		var wg sync.WaitGroup
+
+		// Create a cleanup function to handle proper connection teardown
+		cleanup := func() {
+			cancel()     // Cancel context to signal all goroutines to exit
+			conn.Close() // Ensure connection is closed
+			wg.Wait()    // Wait for all goroutines to exit
+		}
+		defer cleanup()
+
+		// Set up ping/pong handlers to detect dead connections
+		conn.SetPongHandler(func(string) error {
+			// Reset read deadline when we get a pong response
+			conn.SetReadDeadline(time.Now().Add(r.config.WebSocket.ReadTimeout))
+			return nil
+		})
+
+		// Start a goroutine to periodically send pings
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pingTicker := time.NewTicker(r.config.WebSocket.PingInterval)
+			defer pingTicker.Stop()
+
+			for {
+				select {
+				case <-pingTicker.C:
+					// Set write deadline for the ping
+					conn.SetWriteDeadline(time.Now().Add(r.config.WebSocket.WriteTimeout))
+					if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+						// Connection is probably dead, exit the goroutine
+						return
+					}
+				case <-wsCtx.Done():
+					// Context canceled, exit the goroutine
+					return
+				}
+			}
+		}()
+
+		// Handle close signals for graceful shutdown
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			// Listen for server shutdown or client closure
+			select {
+			case <-ctx.Request.Context().Done():
+				// Request context canceled (server shutting down)
+				conn.WriteControl(
+					websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseGoingAway, "Server shutting down"),
+					time.Now().Add(time.Second),
+				)
+				return
+			case <-wsCtx.Done():
+				// Connection context canceled (normal closure)
+				return
+			}
+		}()
+
+		// Set initial read deadline
+		conn.SetReadDeadline(time.Now().Add(r.config.WebSocket.ReadTimeout))
+
+		// Call the actual handler with the managed connection
 		handler(conn, ctx)
+
+		// After handler returns, ensure proper closure
+		conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(time.Second),
+		)
 	}
 }
 
