@@ -141,7 +141,7 @@ func New() *Router {
 	r.pool.New = func() interface{} {
 		return &Context{
 			Params: make([]Param, 0, 5),
-			Values: make(map[string]interface{}, 5),
+			Values: make(map[string]interface{}, 8),
 		}
 	}
 	r.config.Upgrader = &websocket.Upgrader{
@@ -175,20 +175,41 @@ func (c *Context) HTTPClient() *http.Client {
 	return http.DefaultClient
 }
 
+// Pool for reusing request body buffers to reduce allocations
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 	return func(ctx *Context, next func()) {
 		if ctx.IsAborted() {
 			return
 		}
+
 		var errs ValidationErrors
+
+		// Only process validation for POST or PUT requests with chains
 		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT") {
 			contentType := ctx.Request.Header.Get("Content-Type")
+
+			// Handle JSON content
 			if strings.HasPrefix(contentType, "application/json") {
-				bodyBytes, err := io.ReadAll(ctx.Request.Body)
-				if err != nil {
+				// Get a buffer from the pool and ensure it's empty
+				buffer := bufferPool.Get().(*bytes.Buffer)
+				buffer.Reset()
+				defer bufferPool.Put(buffer) // Return buffer to the pool when done
+
+				// Copy request body to buffer
+				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
 					errs = append(errs, ValidationError{Field: "", Error: "failed to read request body"})
 				} else {
+					// Create a new reader from buffer bytes and replace the request body
+					bodyBytes := buffer.Bytes()
 					ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+					// Parse JSON only if we successfully read the body
 					var body map[string]interface{}
 					if err := json.Unmarshal(bodyBytes, &body); err == nil {
 						ctx.Values["body"] = body
@@ -198,27 +219,39 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 				}
 			}
 		}
+
+		// Process validation chains
 		for _, chain := range chains {
 			value := ""
+
+			// Check query parameters first
 			if val := ctx.Request.URL.Query().Get(chain.field); val != "" {
 				value = val
 			} else if val, ok := ctx.GetParam(chain.field); ok {
+				// Then check URL parameters
 				value = val
 			} else if body, ok := ctx.Values["body"].(map[string]interface{}); ok {
+				// Finally check JSON body fields
 				if val, ok := body[chain.field].(string); ok {
 					value = val
 				}
 			}
+
+			// Apply validation rules
 			for _, rule := range chain.rules {
 				if err := rule(value); err != nil {
 					errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
-					break
+					break // Stop on first validation error for this field
 				}
 			}
 		}
+
+		// Store validation errors in context if any
 		if len(errs) > 0 {
 			ctx.ValidationErrs = errs
 		}
+
+		// Continue with the next middleware or handler
 		next()
 	}
 }
