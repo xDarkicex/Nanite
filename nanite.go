@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -30,10 +31,11 @@ type MiddlewareFunc func(*Context, func())
 // Context holds request and response data, along with route parameters and user-defined values.
 // It serves as the central object passed through handlers and middleware.
 type Context struct {
-	Writer  http.ResponseWriter    // Response writer for sending HTTP responses
-	Request *http.Request          // Incoming HTTP request object
-	Params  map[string]string      // Route parameters extracted from the URL (e.g., ":id")
-	Values  map[string]interface{} // User-defined key-value pairs (e.g., database connections)
+	Writer         http.ResponseWriter    // Response writer for sending HTTP responses
+	Request        *http.Request          // Incoming HTTP request object
+	Params         map[string]string      // Route parameters extracted from the URL (e.g., ":id")
+	Values         map[string]interface{} // User-defined key-value pairs (e.g., database connections)
+	ValidationErrs ValidationErrors       // Validation errors
 }
 
 // node represents a segment in the route path tree used for efficient route matching.
@@ -62,6 +64,74 @@ type Router struct {
 	mutex      sync.RWMutex     // Mutex for thread-safe route registration
 	middleware []MiddlewareFunc // Global middleware chain applied to all routes
 	config     *Config          // Router configuration options
+}
+
+// ValidationError represents a single validation error.
+type ValidationError struct {
+	Field string `json:"field"`
+	Error string `json:"error"`
+}
+
+// ValidationErrors is a slice of validation errors.
+type ValidationErrors []ValidationError
+
+// Error implements the error interface for ValidationErrors.
+func (ve ValidationErrors) Error() string {
+	if len(ve) == 0 {
+		return "Validation failed"
+	}
+	var errs []string
+	for _, e := range ve {
+		errs = append(errs, fmt.Sprintf("%s: %s", e.Field, e.Error))
+	}
+	return fmt.Sprintf("Validation failed: %s", strings.Join(errs, ", "))
+}
+
+// ValidatorFunc is a function type for validation rules.
+type ValidatorFunc func(value string) error
+
+// ValidationChain holds a field name and its validation rules.
+type ValidationChain struct {
+	field string
+	rules []ValidatorFunc
+}
+
+// NewValidationChain creates a new validation chain for a field.
+func NewValidationChain(field string) *ValidationChain {
+	return &ValidationChain{field: field}
+}
+
+// Required ensures the field is not empty.
+func (vc *ValidationChain) Required() *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return fmt.Errorf("field is required")
+		}
+		return nil
+	})
+	return vc
+}
+
+// IsEmail validates the field as an email (simplified check).
+func (vc *ValidationChain) IsEmail() *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if !strings.Contains(value, "@") {
+			return fmt.Errorf("invalid email format")
+		}
+		return nil
+	})
+	return vc
+}
+
+// IsInt ensures the field is an integer.
+func (vc *ValidationChain) IsInt() *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if _, err := strconv.Atoi(value); err != nil {
+			return fmt.Errorf("must be an integer")
+		}
+		return nil
+	})
+	return vc
 }
 
 // ### Router Initialization
@@ -96,6 +166,41 @@ func (r *Router) Use(middleware ...MiddlewareFunc) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.middleware = append(r.middleware, middleware...)
+}
+
+// ValidationMiddleware validates the request based on provided chains.
+func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
+	return func(ctx *Context, next func()) {
+		var errs ValidationErrors
+		for _, chain := range chains {
+			value := ""
+			// Check query, params, then body
+			if val := ctx.Request.URL.Query().Get(chain.field); val != "" {
+				value = val
+			} else if val, ok := ctx.Params[chain.field]; ok {
+				value = val
+			} else if ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" {
+				var body map[string]interface{}
+				if err := json.NewDecoder(ctx.Request.Body).Decode(&body); err == nil {
+					if val, ok := body[chain.field].(string); ok {
+						value = val
+					}
+				}
+			}
+			// Apply each rule
+			for _, rule := range chain.rules {
+				if err := rule(value); err != nil {
+					errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
+					break
+				}
+			}
+		}
+		// Store errors in context
+		if len(errs) > 0 {
+			ctx.ValidationErrs = errs
+		}
+		next() // Proceed to the next middleware/handler
+	}
 }
 
 // ### Route Registration
@@ -426,6 +531,17 @@ func (c *Context) JSON(status int, data interface{}) {
 	if err := json.NewEncoder(c.Writer).Encode(data); err != nil {
 		http.Error(c.Writer, "Failed to encode JSON", http.StatusInternalServerError)
 	}
+}
+
+// CheckValidation checks for validation errors and sends a response if any exist.
+func (c *Context) CheckValidation() bool {
+	if len(c.ValidationErrs) > 0 {
+		c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"errors": c.ValidationErrs,
+		})
+		return false
+	}
+	return true
 }
 
 // String sends a plain text response with the specified status code.
