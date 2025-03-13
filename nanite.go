@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -46,6 +47,7 @@ type Router struct {
 	mutex      sync.RWMutex     // Ensures thread-safe route registration
 	middleware []MiddlewareFunc // Global middleware applied to all routes
 	config     *Config          // Router configuration options
+	httpClient *http.Client     // httpClient field for pooled connections
 }
 
 // Config holds router customization options.
@@ -145,6 +147,13 @@ func New() *Router {
 				CheckOrigin: func(*http.Request) bool { return true },
 			},
 		},
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 	}
 	r.pool.New = func() interface{} {
 		return &Context{
@@ -176,6 +185,19 @@ func (c *Context) Abort() {
 // IsAborted is a Simple check for abort state
 func (c *Context) IsAborted() bool {
 	return c.aborted
+}
+
+// Add a helper method to the Context
+func (c *Context) HTTPClient() *http.Client {
+	if client, ok := c.Values["httpClient"].(*http.Client); ok {
+		return client
+	}
+	// Fall back to the router's client
+	if router, ok := c.Values["router"].(*Router); ok {
+		return router.httpClient
+	}
+	// Last resort - create a new client
+	return http.DefaultClient
 }
 
 // ValidationMiddleware validates requests based on provided chains.
