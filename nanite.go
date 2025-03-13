@@ -279,9 +279,31 @@ func (r *Router) Group(prefix string, middleware ...MiddlewareFunc) *Router {
 	return sub
 }
 
+func parsePath(path string) []string {
+	if path == "/" {
+		return []string{}
+	}
+
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return []string{}
+	}
+
+	parts := make([]string, 0, 10) // Most paths have < 10 segments
+	start := 0
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			parts = append(parts, path[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, path[start:])
+	return parts
+}
+
 func (r *Router) Mount(prefix string, subRouter *Router) {
 	prefix = strings.Trim(prefix, "/")
-	parts := strings.Split(prefix, "/")
+	parts := parsePath(prefix)
 	for method, tree := range subRouter.trees {
 		if _, exists := r.trees[method]; !exists {
 			r.trees[method] = &node{children: []childNode{}}
@@ -325,7 +347,7 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 		r.trees[method] = &node{children: []childNode{}}
 	}
 	cur := r.trees[method]
-	parts := strings.Split(strings.Trim(path, "/"), "/")
+	parts := parsePath(path)
 	for _, part := range parts {
 		var key string
 		if strings.HasPrefix(part, ":") {
