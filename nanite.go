@@ -1,11 +1,14 @@
 package nanite
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -453,39 +456,173 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 	return nil, nil
 }
 
-// Optimized ServeHTTP: Replace Values map instead of clearing
+// Improved ServeHTTP with proper timeout and cancellation support
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// Wrap the response writer to track if headers have been sent
+	trackedWriter := WrapResponseWriter(w)
+
+	// Get a context from the pool
 	ctx := r.pool.Get().(*Context)
-	ctx.Writer = w
+	ctx.Writer = trackedWriter
 	ctx.Request = req
-	ctx.Params = nil
-	ctx.Values = make(map[string]interface{}) // Replace instead of clearing
+	ctx.Params = ctx.Params[:0] // Reuse slice capacity but clear contents
+
+	// Replace the Values map for a clean state
+	ctx.Values = make(map[string]interface{})
+	ctx.Values["router"] = r // Store router reference for access to httpClient
+
 	ctx.ValidationErrs = nil
 	ctx.aborted = false
 
+	// Ensure context is returned to pool when done
 	defer r.pool.Put(ctx)
+
+	// Use the request's context for detecting cancellation and timeouts
+	reqCtx := req.Context()
+
+	// Set up a goroutine to monitor for cancellation if the context can be canceled
+	if reqCtx.Done() != nil {
+		// We need a way to signal when we're completely done handling this request
+		finished := make(chan struct{})
+		defer close(finished)
+
+		go func() {
+			select {
+			case <-reqCtx.Done():
+				// Request was canceled or timed out
+				ctx.Abort()
+
+				// Only send error response if we haven't already sent headers
+				if !trackedWriter.Written() {
+					// Determine the appropriate status code based on the error
+					statusCode := http.StatusGatewayTimeout // Default to 504 for timeouts
+
+					if reqCtx.Err() == context.Canceled {
+						statusCode = 499 // Nginx's code for client closed request
+					}
+
+					http.Error(trackedWriter, fmt.Sprintf("Request %v", reqCtx.Err()), statusCode)
+				}
+			case <-finished:
+				// Handler completed normally, do nothing
+			}
+		}()
+	}
+
+	// Find the appropriate handler
 	handler, params := r.findHandlerAndMiddleware(req.Method, req.URL.Path)
 	if handler == nil {
 		if r.config.NotFoundHandler != nil {
 			r.config.NotFoundHandler(ctx)
 		} else {
-			http.NotFound(w, req)
+			http.NotFound(trackedWriter, req)
 		}
 		return
 	}
+
+	// Set parameters to context
 	ctx.Params = params
 
-	// Middleware chain is pre-built in addRoute, so just call the handler
+	// Capture panics from handlers and provide proper error handling
 	defer func() {
 		if err := recover(); err != nil {
-			if r.config.ErrorHandler != nil {
-				r.config.ErrorHandler(ctx, fmt.Errorf("%v", err))
+			// Abort the context to prevent further processing
+			ctx.Abort()
+
+			// Check if response was already started
+			if !trackedWriter.Written() {
+				if r.config.ErrorHandler != nil {
+					r.config.ErrorHandler(ctx, fmt.Errorf("%v", err))
+				} else {
+					http.Error(trackedWriter, "Internal Server Error", http.StatusInternalServerError)
+				}
 			} else {
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				// If headers were already sent, we can only log the error
+				fmt.Printf("Panic occurred after response was started: %v\n", err)
 			}
 		}
 	}()
+
+	// Execute the handler (middleware chain is already pre-built in addRoute)
 	handler(ctx)
+}
+
+// TrackedResponseWriter wraps http.ResponseWriter to track if headers have been sent
+type TrackedResponseWriter struct {
+	http.ResponseWriter
+	statusCode    int
+	headerWritten bool
+	bytesWritten  int64
+}
+
+// WrapResponseWriter creates a new TrackedResponseWriter
+func WrapResponseWriter(w http.ResponseWriter) *TrackedResponseWriter {
+	return &TrackedResponseWriter{
+		ResponseWriter: w,
+		statusCode:     http.StatusOK, // Default status code
+	}
+}
+
+// WriteHeader records that headers have been written
+func (w *TrackedResponseWriter) WriteHeader(statusCode int) {
+	if !w.headerWritten {
+		w.statusCode = statusCode
+		w.ResponseWriter.WriteHeader(statusCode)
+		w.headerWritten = true
+	}
+}
+
+// Write records that data (and implicitly headers) have been written
+func (w *TrackedResponseWriter) Write(b []byte) (int, error) {
+	if !w.headerWritten {
+		w.WriteHeader(http.StatusOK) // Implicit 200 OK
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytesWritten += int64(n)
+	return n, err
+}
+
+// Status returns the HTTP status code that was set
+func (w *TrackedResponseWriter) Status() int {
+	return w.statusCode
+}
+
+// Written returns whether headers have been sent
+func (w *TrackedResponseWriter) Written() bool {
+	return w.headerWritten
+}
+
+// BytesWritten returns the number of bytes written
+func (w *TrackedResponseWriter) BytesWritten() int64 {
+	return w.bytesWritten
+}
+
+// Unwrap returns the original ResponseWriter
+func (w *TrackedResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// Flush implements http.Flusher interface if the underlying writer supports it
+func (w *TrackedResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Hijack implements http.Hijacker interface if the underlying writer supports it
+func (w *TrackedResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hijacker, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+}
+
+// Push implements http.Pusher interface if the underlying writer supports it (for HTTP/2)
+func (w *TrackedResponseWriter) Push(target string, opts *http.PushOptions) error {
+	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
+		return pusher.Push(target, opts)
+	}
+	return fmt.Errorf("underlying ResponseWriter does not implement http.Pusher")
 }
 
 // Optimized Server Start Methods: Add timeouts
