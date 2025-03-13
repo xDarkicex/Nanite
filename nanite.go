@@ -10,6 +10,8 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,6 +98,8 @@ func (ve ValidationErrors) Error() string {
 }
 
 type ValidatorFunc func(string) error
+
+// Enhanced ValidationChain with type-specific validators
 type ValidationChain struct {
 	field string
 	rules []ValidatorFunc
@@ -105,6 +109,7 @@ func NewValidationChain(field string) *ValidationChain {
 	return &ValidationChain{field: field}
 }
 
+// Basic validators
 func (vc *ValidationChain) Required() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -117,7 +122,10 @@ func (vc *ValidationChain) Required() *ValidationChain {
 
 func (vc *ValidationChain) IsEmail() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
-		if !strings.Contains(value, "@") {
+		if value == "" {
+			return nil // Skip empty values unless Required is also used
+		}
+		if !strings.Contains(value, "@") || !strings.Contains(value, ".") {
 			return fmt.Errorf("invalid email format")
 		}
 		return nil
@@ -125,10 +133,172 @@ func (vc *ValidationChain) IsEmail() *ValidationChain {
 	return vc
 }
 
+// Enhanced numeric validators
 func (vc *ValidationChain) IsInt() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
 		if _, err := strconv.Atoi(value); err != nil {
 			return fmt.Errorf("must be an integer")
+		}
+		return nil
+	})
+	return vc
+}
+
+func (vc *ValidationChain) IsFloat() *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		if _, err := strconv.ParseFloat(value, 64); err != nil {
+			return fmt.Errorf("must be a number")
+		}
+		return nil
+	})
+	return vc
+}
+
+func (vc *ValidationChain) IsBoolean() *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		lowerVal := strings.ToLower(value)
+		if lowerVal != "true" && lowerVal != "false" &&
+			lowerVal != "1" && lowerVal != "0" {
+			return fmt.Errorf("must be a boolean value")
+		}
+		return nil
+	})
+	return vc
+}
+
+// Range validators
+func (vc *ValidationChain) Min(min int) *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		num, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("must be a number")
+		}
+		if num < min {
+			return fmt.Errorf("must be at least %d", min)
+		}
+		return nil
+	})
+	return vc
+}
+
+func (vc *ValidationChain) Max(max int) *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		num, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("must be a number")
+		}
+		if num > max {
+			return fmt.Errorf("must be at most %d", max)
+		}
+		return nil
+	})
+	return vc
+}
+
+func (vc *ValidationChain) Length(min, max int) *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		length := len(value)
+		if length < min {
+			return fmt.Errorf("must be at least %d characters", min)
+		}
+		if length > max {
+			return fmt.Errorf("must be at most %d characters", max)
+		}
+		return nil
+	})
+	return vc
+}
+
+// Pattern matching
+func (vc *ValidationChain) Matches(pattern string) *ValidationChain {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		// If the regex is invalid, add a rule that always fails
+		vc.rules = append(vc.rules, func(value string) error {
+			return fmt.Errorf("invalid validation pattern")
+		})
+		return vc
+	}
+
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		if !re.MatchString(value) {
+			return fmt.Errorf("invalid format")
+		}
+		return nil
+	})
+	return vc
+}
+
+// Option validators
+func (vc *ValidationChain) OneOf(options ...string) *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		for _, option := range options {
+			if value == option {
+				return nil
+			}
+		}
+		return fmt.Errorf("must be one of: %s", strings.Join(options, ", "))
+	})
+	return vc
+}
+
+// Custom validator
+func (vc *ValidationChain) Custom(fn func(string) error) *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		return fn(value)
+	})
+	return vc
+}
+
+// Array validation (for JSON arrays)
+func (vc *ValidationChain) IsArray() *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		if !strings.HasPrefix(value, "[") || !strings.HasSuffix(value, "]") {
+			return fmt.Errorf("must be an array")
+		}
+		return nil
+	})
+	return vc
+}
+
+// Object validation (for JSON objects)
+func (vc *ValidationChain) IsObject() *ValidationChain {
+	vc.rules = append(vc.rules, func(value string) error {
+		if value == "" {
+			return nil
+		}
+		if !strings.HasPrefix(value, "{") || !strings.HasSuffix(value, "}") {
+			return fmt.Errorf("must be an object")
 		}
 		return nil
 	})
@@ -973,17 +1143,380 @@ func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
 	}
 }
 
-func LoggingMiddleware() MiddlewareFunc {
-	return func(c *Context, next func()) {
-		start := time.Now()
-		next()
-		elapsed := time.Since(start)
+// ### Logger will later move to its own file.
+// LogLevel represents the severity of a log message
+type LogLevel int
 
-		fmt.Printf("[%s] %s %s - %v\n",
-			time.Now().Format("2006-01-02 15:04:05"),
-			c.Request.Method,
-			c.Request.URL.Path,
-			elapsed,
+const (
+	DEBUG LogLevel = iota
+	INFO
+	WARN
+	ERROR
+	FATAL
+)
+
+// String returns the string representation of the log level
+func (l LogLevel) String() string {
+	switch l {
+	case DEBUG:
+		return "DEBUG"
+	case INFO:
+		return "INFO"
+	case WARN:
+		return "WARN"
+	case ERROR:
+		return "ERROR"
+	case FATAL:
+		return "FATAL"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// LogColor represents ANSI color codes for colorized terminal output
+var LogColor = map[LogLevel]string{
+	DEBUG: "\033[37m", // White
+	INFO:  "\033[32m", // Green
+	WARN:  "\033[33m", // Yellow
+	ERROR: "\033[31m", // Red
+	FATAL: "\033[35m", // Magenta
+}
+
+// LogEntry represents a single log message
+type LogEntry struct {
+	Time      time.Time
+	Level     LogLevel
+	Method    string
+	Path      string
+	IP        string
+	Status    int
+	Latency   time.Duration
+	BytesSent int64
+	UserAgent string
+	RequestID string
+	Error     error
+}
+
+// LoggerConfig provides configuration options for the logger
+type LoggerConfig struct {
+	Level          LogLevel
+	Async          bool
+	BufferSize     int
+	Format         string // "text", "json", or "color"
+	Output         *os.File
+	ExcludePaths   []string
+	IncludeHeaders []string
+}
+
+// defaultLoggerConfig provides sensible defaults
+func defaultLoggerConfig() LoggerConfig {
+	return LoggerConfig{
+		Level:          INFO,
+		Async:          true,
+		BufferSize:     1000,
+		Format:         "color",
+		Output:         os.Stdout,
+		ExcludePaths:   []string{"/health", "/metrics"},
+		IncludeHeaders: []string{"User-Agent", "Referer"},
+	}
+}
+
+// Logger is the actual logger implementation
+type Logger struct {
+	config   LoggerConfig
+	entries  chan LogEntry
+	wg       sync.WaitGroup
+	shutdown chan struct{}
+	once     sync.Once
+}
+
+// NewLogger creates a new logger instance with the provided config
+func NewLogger(config *LoggerConfig) *Logger {
+	cfg := defaultLoggerConfig()
+	if config != nil {
+		if config.Level > 0 {
+			cfg.Level = config.Level
+		}
+		if config.BufferSize > 0 {
+			cfg.BufferSize = config.BufferSize
+		}
+		if config.Format != "" {
+			cfg.Format = config.Format
+		}
+		if config.Output != nil {
+			cfg.Output = config.Output
+		}
+		if len(config.ExcludePaths) > 0 {
+			cfg.ExcludePaths = config.ExcludePaths
+		}
+		if len(config.IncludeHeaders) > 0 {
+			cfg.IncludeHeaders = config.IncludeHeaders
+		}
+		cfg.Async = config.Async
+	}
+
+	logger := &Logger{
+		config:   cfg,
+		entries:  make(chan LogEntry, cfg.BufferSize),
+		shutdown: make(chan struct{}),
+	}
+
+	if cfg.Async {
+		logger.wg.Add(1)
+		go logger.processEntries()
+	}
+
+	return logger
+}
+
+// processEntries handles log entries asynchronously
+func (l *Logger) processEntries() {
+	defer l.wg.Done()
+
+	for {
+		select {
+		case entry := <-l.entries:
+			l.writeEntry(entry)
+		case <-l.shutdown:
+			// Drain remaining entries when shutting down
+			for {
+				select {
+				case entry := <-l.entries:
+					l.writeEntry(entry)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// Close shuts down the logger gracefully
+func (l *Logger) Close() {
+	l.once.Do(func() {
+		close(l.shutdown)
+		l.wg.Wait()
+
+		// Process any remaining entries synchronously
+		for len(l.entries) > 0 {
+			l.writeEntry(<-l.entries)
+		}
+	})
+}
+
+// shouldSkipPath determines if a path should be excluded from logging
+func (l *Logger) shouldSkipPath(path string) bool {
+	for _, p := range l.config.ExcludePaths {
+		if p == path {
+			return true
+		}
+	}
+	return false
+}
+
+// writeEntry formats and writes a log entry
+func (l *Logger) writeEntry(entry LogEntry) {
+	// Skip low-priority messages based on configured level
+	if entry.Level < l.config.Level {
+		return
+	}
+
+	switch l.config.Format {
+	case "json":
+		fmt.Fprintf(l.config.Output,
+			`{"time":"%s","level":"%s","method":"%s","path":"%s","ip":"%s","status":%d,"latency":"%s","bytes_sent":%d,"user_agent":"%s","request_id":"%s"%s}`,
+			entry.Time.Format(time.RFC3339),
+			entry.Level.String(),
+			entry.Method,
+			entry.Path,
+			entry.IP,
+			entry.Status,
+			entry.Latency.String(),
+			entry.BytesSent,
+			entry.UserAgent,
+			entry.RequestID,
+			func() string {
+				if entry.Error != nil {
+					return fmt.Sprintf(`,"error":"%s"`, entry.Error.Error())
+				}
+				return ""
+			}(),
+		)
+		fmt.Fprintln(l.config.Output)
+	case "color":
+		statusColor := "\033[32m" // Green by default
+		if entry.Status >= 300 && entry.Status < 400 {
+			statusColor = "\033[33m" // Yellow for redirects
+		} else if entry.Status >= 400 && entry.Status < 500 {
+			statusColor = "\033[31m" // Red for client errors
+		} else if entry.Status >= 500 {
+			statusColor = "\033[35m" // Magenta for server errors
+		}
+
+		fmt.Fprintf(l.config.Output,
+			"%s[%s] %s%s %s %s | %s%d %s| %s | %s%s%s\n",
+			LogColor[entry.Level],
+			entry.Level.String(),
+			entry.Time.Format("2006-01-02 15:04:05"),
+			"\033[0m",
+			entry.Method,
+			entry.Path,
+			statusColor, entry.Status, "\033[0m",
+			entry.Latency.String(),
+			func() string {
+				if entry.Error != nil {
+					return "\033[31mERROR: " + entry.Error.Error() + "\033[0m"
+				}
+				return ""
+			}(),
+			func() string {
+				if entry.RequestID != "" {
+					return " | ID:" + entry.RequestID
+				}
+				return ""
+			}(),
+			"\033[0m",
+		)
+	default: // plain text
+		fmt.Fprintf(l.config.Output,
+			"[%s] [%s] %s %s %s | %d | %s | %d bytes | %s%s%s\n",
+			entry.Time.Format("2006-01-02 15:04:05"),
+			entry.Level.String(),
+			entry.Method,
+			entry.Path,
+			entry.IP,
+			entry.Status,
+			entry.Latency.String(),
+			entry.BytesSent,
+			func() string {
+				if entry.Error != nil {
+					return "ERROR: " + entry.Error.Error() + " | "
+				}
+				return ""
+			}(),
+			func() string {
+				if entry.RequestID != "" {
+					return "ID:" + entry.RequestID + " | "
+				}
+				return ""
+			}(),
+			func() string {
+				if entry.UserAgent != "" {
+					if len(entry.UserAgent) > 50 {
+						return entry.UserAgent[:47] + "..."
+					}
+					return entry.UserAgent
+				}
+				return ""
+			}(),
 		)
 	}
+}
+
+// log submits a log entry for processing
+func (l *Logger) log(entry LogEntry) {
+	if l.config.Async {
+		select {
+		case l.entries <- entry:
+			// Successfully enqueued
+		default:
+			// Buffer full, write directly to avoid losing the log
+			l.writeEntry(entry)
+		}
+	} else {
+		l.writeEntry(entry)
+	}
+}
+
+// LoggingMiddleware creates a middleware that logs HTTP requests
+func LoggingMiddleware(config *LoggerConfig) MiddlewareFunc {
+	logger := NewLogger(config)
+
+	// Generate a unique request ID
+	var requestIDCounter uint64
+	var requestIDMutex sync.Mutex
+
+	getRequestID := func() string {
+		requestIDMutex.Lock()
+		defer requestIDMutex.Unlock()
+		requestIDCounter++
+		return fmt.Sprintf("%d-%d", time.Now().UnixNano(), requestIDCounter)
+	}
+
+	return func(c *Context, next func()) {
+		// Skip logging for excluded paths
+		if logger.shouldSkipPath(c.Request.URL.Path) {
+			next()
+			return
+		}
+
+		// Generate request ID and store in context
+		requestID := getRequestID()
+		c.Set("requestID", requestID)
+
+		// Add request ID to response headers
+		c.SetHeader("X-Request-ID", requestID)
+
+		// Collect start time and initial info
+		start := time.Now()
+
+		// Process request
+		next()
+
+		// Get wrapped response writer to access status code and bytes written
+		w, ok := c.Writer.(*TrackedResponseWriter)
+		if !ok {
+			// Fallback if writer is not the expected type
+			logger.log(LogEntry{
+				Time:      start,
+				Level:     INFO,
+				Method:    c.Request.Method,
+				Path:      c.Request.URL.Path,
+				IP:        c.Request.RemoteAddr,
+				Status:    0, // Unknown
+				Latency:   time.Since(start),
+				RequestID: requestID,
+			})
+			return
+		}
+
+		// Determine log level based on status code
+		level := INFO
+		if w.Status() >= 400 && w.Status() < 500 {
+			level = WARN
+		} else if w.Status() >= 500 {
+			level = ERROR
+		}
+
+		// Get error from context if present
+		var err error
+		if errVal := c.Get("error"); errVal != nil {
+			if e, ok := errVal.(error); ok {
+				err = e
+			}
+		}
+
+		// Extract requested headers
+		userAgent := c.Request.Header.Get("User-Agent")
+
+		// Create and submit log entry
+		logger.log(LogEntry{
+			Time:      start,
+			Level:     level,
+			Method:    c.Request.Method,
+			Path:      c.Request.URL.Path,
+			IP:        c.Request.RemoteAddr,
+			Status:    w.Status(),
+			Latency:   time.Since(start),
+			BytesSent: w.BytesWritten(),
+			UserAgent: userAgent,
+			RequestID: requestID,
+			Error:     err,
+		})
+	}
+}
+
+// DefaultLoggingMiddleware returns a logging middleware with default configuration
+func DefaultLoggingMiddleware() MiddlewareFunc {
+	return LoggingMiddleware(nil)
 }
