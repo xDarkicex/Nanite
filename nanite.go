@@ -141,7 +141,7 @@ func New() *Router {
 	r.pool.New = func() interface{} {
 		return &Context{
 			Params: make([]Param, 0, 5),
-			Values: make(map[string]interface{}),
+			Values: make(map[string]interface{}, 5),
 		}
 	}
 	r.config.Upgrader = &websocket.Upgrader{
