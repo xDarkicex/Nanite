@@ -649,3 +649,18 @@ func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
 		handler(conn, ctx)
 	}
 }
+
+func LoggingMiddleware() MiddlewareFunc {
+	return func(c *Context, next func()) {
+		start := time.Now()
+		next()
+		elapsed := time.Since(start)
+
+		fmt.Printf("[%s] %s %s - %v\n",
+			time.Now().Format("2006-01-02 15:04:05"),
+			c.Request.Method,
+			c.Request.URL.Path,
+			elapsed,
+		)
+	}
+}
