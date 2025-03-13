@@ -21,7 +21,7 @@ A lightweight, high-performance HTTP router for Go with an intuitive API inspire
 ## Installation
 
 ```bash
-go get github.com/yourusername/nanite
+go get github.com/xDarkicex/nanite
 ```
 
 ## Quick Start
@@ -31,7 +31,7 @@ package main
 
 import (
     "net/http"
-    "github.com/yourusername/nanite"
+    "github.com/xDarkicex/nanite"
 )
 
 func main() {
