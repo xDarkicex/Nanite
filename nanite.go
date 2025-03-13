@@ -213,9 +213,31 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 
 		var errs ValidationErrors
 
-		// Only process validation for POST or PUT requests with chains
-		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT") {
+		// Process validation for all request methods that might contain data
+		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
+			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
+
 			contentType := ctx.Request.Header.Get("Content-Type")
+
+			// Handle form data
+			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
+				strings.HasPrefix(contentType, "multipart/form-data") {
+
+				if err := ctx.Request.ParseForm(); err != nil {
+					errs = append(errs, ValidationError{Field: "", Error: "failed to parse form data"})
+				} else {
+					// Store form values in context for easy access
+					formData := make(map[string]interface{})
+					for key, values := range ctx.Request.Form {
+						if len(values) == 1 {
+							formData[key] = values[0]
+						} else {
+							formData[key] = values
+						}
+					}
+					ctx.Values["formData"] = formData
+				}
+			}
 
 			// Handle JSON content
 			if strings.HasPrefix(contentType, "application/json") {
@@ -245,26 +267,72 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 
 		// Process validation chains
 		for _, chain := range chains {
-			value := ""
+			var value interface{}
+			var found bool
 
 			// Check query parameters first
 			if val := ctx.Request.URL.Query().Get(chain.field); val != "" {
 				value = val
+				found = true
 			} else if val, ok := ctx.GetParam(chain.field); ok {
 				// Then check URL parameters
 				value = val
+				found = true
+			} else if formData, ok := ctx.Values["formData"].(map[string]interface{}); ok {
+				// Check form data
+				if val, ok := formData[chain.field]; ok {
+					value = val
+					found = true
+				}
 			} else if body, ok := ctx.Values["body"].(map[string]interface{}); ok {
 				// Finally check JSON body fields
-				if val, ok := body[chain.field].(string); ok {
+				if val, ok := body[chain.field]; ok {
 					value = val
+					found = true
 				}
 			}
 
-			// Apply validation rules
-			for _, rule := range chain.rules {
-				if err := rule(value); err != nil {
-					errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
-					break // Stop on first validation error for this field
+			// Apply validation rules if the field was found
+			if found {
+				for _, rule := range chain.rules {
+					// Convert value to string if it's not already a string
+					strValue := ""
+					switch v := value.(type) {
+					case string:
+						strValue = v
+					case float64:
+						strValue = strconv.FormatFloat(v, 'f', -1, 64)
+					case int:
+						strValue = strconv.Itoa(v)
+					case bool:
+						strValue = strconv.FormatBool(v)
+					case []interface{}:
+						// Handle array values (convert to JSON)
+						if jsonBytes, err := json.Marshal(v); err == nil {
+							strValue = string(jsonBytes)
+						}
+					case map[string]interface{}:
+						// Handle object values (convert to JSON)
+						if jsonBytes, err := json.Marshal(v); err == nil {
+							strValue = string(jsonBytes)
+						}
+					default:
+						// For any other type, try to convert to string
+						strValue = fmt.Sprintf("%v", v)
+					}
+
+					if err := rule(strValue); err != nil {
+						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
+						break // Stop on first validation error for this field
+					}
+				}
+			} else {
+				// Field not found in any source - check if it's required
+				for _, rule := range chain.rules {
+					if err := rule(""); err != nil {
+						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
+						break
+					}
 				}
 			}
 		}
