@@ -383,20 +383,50 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 
 		var errs ValidationErrors
 
-		// Process validation for all request methods that might contain data
+		// Initialize Values map if nil
+		if ctx.Values == nil {
+			ctx.Values = make(map[string]interface{})
+		}
+
+		// Process validation for methods that might contain data
 		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
 			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
 
 			contentType := ctx.Request.Header.Get("Content-Type")
 
+			// Handle JSON content
+			if strings.HasPrefix(contentType, "application/json") {
+				// Get a buffer from the pool
+				buffer := bufferPool.Get().(*bytes.Buffer)
+				buffer.Reset()
+				defer bufferPool.Put(buffer)
+
+				// Read the entire body into the buffer
+				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
+					errs = append(errs, ValidationError{Field: "", Error: "failed to read request body"})
+				} else {
+					bodyBytes := buffer.Bytes()
+
+					// Parse JSON once
+					var body map[string]interface{}
+					if err := json.Unmarshal(bodyBytes, &body); err != nil {
+						errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
+					} else {
+						// Store parsed body in context for validation and binding
+						ctx.Values["body"] = body
+						// Replace request body with a new reader for subsequent reads
+						ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+					}
+				}
+			}
+
 			// Handle form data
 			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
 				strings.HasPrefix(contentType, "multipart/form-data") {
-
 				if err := ctx.Request.ParseForm(); err != nil {
 					errs = append(errs, ValidationError{Field: "", Error: "failed to parse form data"})
 				} else {
-					// Store form values in context for easy access
+					// Store form values in context
 					formData := make(map[string]interface{})
 					for key, values := range ctx.Request.Form {
 						if len(values) == 1 {
@@ -408,31 +438,6 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 					ctx.Values["formData"] = formData
 				}
 			}
-
-			// Handle JSON content
-			if strings.HasPrefix(contentType, "application/json") {
-				// Get a buffer from the pool and ensure it's empty
-				buffer := bufferPool.Get().(*bytes.Buffer)
-				buffer.Reset()
-				defer bufferPool.Put(buffer) // Return buffer to the pool when done
-
-				// Copy request body to buffer
-				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
-					errs = append(errs, ValidationError{Field: "", Error: "failed to read request body"})
-				} else {
-					// Create a new reader from buffer bytes and replace the request body
-					bodyBytes := buffer.Bytes()
-					ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-
-					// Parse JSON only if we successfully read the body
-					var body map[string]interface{}
-					if err := json.Unmarshal(bodyBytes, &body); err == nil {
-						ctx.Values["body"] = body
-					} else {
-						errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
-					}
-				}
-			}
 		}
 
 		// Process validation chains
@@ -440,12 +445,12 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 			var value interface{}
 			var found bool
 
-			// Check query parameters first
+			// Check query parameters
 			if val := ctx.Request.URL.Query().Get(chain.field); val != "" {
 				value = val
 				found = true
 			} else if val, ok := ctx.GetParam(chain.field); ok {
-				// Then check URL parameters
+				// Check URL parameters
 				value = val
 				found = true
 			} else if formData, ok := ctx.Values["formData"].(map[string]interface{}); ok {
@@ -455,7 +460,7 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 					found = true
 				}
 			} else if body, ok := ctx.Values["body"].(map[string]interface{}); ok {
-				// Finally check JSON body fields
+				// Check JSON body
 				if val, ok := body[chain.field]; ok {
 					value = val
 					found = true
@@ -465,39 +470,15 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 			// Apply validation rules if the field was found
 			if found {
 				for _, rule := range chain.rules {
-					// Convert value to string if it's not already a string
-					strValue := ""
-					switch v := value.(type) {
-					case string:
-						strValue = v
-					case float64:
-						strValue = strconv.FormatFloat(v, 'f', -1, 64)
-					case int:
-						strValue = strconv.Itoa(v)
-					case bool:
-						strValue = strconv.FormatBool(v)
-					case []interface{}:
-						// Handle array values (convert to JSON)
-						if jsonBytes, err := json.Marshal(v); err == nil {
-							strValue = string(jsonBytes)
-						}
-					case map[string]interface{}:
-						// Handle object values (convert to JSON)
-						if jsonBytes, err := json.Marshal(v); err == nil {
-							strValue = string(jsonBytes)
-						}
-					default:
-						// For any other type, try to convert to string
-						strValue = fmt.Sprintf("%v", v)
-					}
-
+					// Convert value to string for validation
+					strValue := fmt.Sprintf("%v", value)
 					if err := rule(strValue); err != nil {
 						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
-						break // Stop on first validation error for this field
+						break
 					}
 				}
 			} else {
-				// Field not found in any source - check if it's required
+				// Check if the field is required
 				for _, rule := range chain.rules {
 					if err := rule(""); err != nil {
 						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
@@ -926,6 +907,14 @@ func (c *Context) Get(key string) interface{} {
 }
 
 func (c *Context) Bind(v interface{}) error {
+	if body, ok := c.Values["body"]; ok {
+		// Use pre-parsed body if available
+		bodyBytes, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("failed to marshal pre-parsed body: %w", err)
+		}
+		return json.Unmarshal(bodyBytes, v)
+	}
 	if err := json.NewDecoder(c.Request.Body).Decode(v); err != nil {
 		return fmt.Errorf("failed to decode JSON: %w", err)
 	}
