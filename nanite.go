@@ -683,11 +683,27 @@ func (c *Context) Query(key string) string {
 }
 
 func (c *Context) GetParam(key string) (string, bool) {
-	for _, p := range c.Params {
-		if p.Key == key {
-			return p.Value, true
+	// Unrolled loop for small slices can be faster
+	params := c.Params
+	n := len(params)
+
+	if n > 0 && params[0].Key == key {
+		return params[0].Value, true
+	}
+	if n > 1 && params[1].Key == key {
+		return params[1].Value, true
+	}
+	if n > 2 && params[2].Key == key {
+		return params[2].Value, true
+	}
+
+	// Fall back to regular loop for more params
+	for i := 3; i < n; i++ {
+		if params[i].Key == key {
+			return params[i].Value, true
 		}
 	}
+
 	return "", false
 }
 
