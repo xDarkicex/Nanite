@@ -35,6 +35,7 @@ type Context struct {
 	Params         map[string]string      // Route parameters (e.g., ":id")
 	Values         map[string]interface{} // User-defined key-value pairs
 	ValidationErrs ValidationErrors       // Validation errors from middleware or handlers
+	aborted        bool                   // Middleware abortion value
 }
 
 // Router manages routes, middleware, and HTTP request handling.
@@ -165,6 +166,16 @@ func (r *Router) Use(middleware ...MiddlewareFunc) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.middleware = append(r.middleware, middleware...)
+}
+
+// Abort is for middleware abort functionality
+func (c *Context) Abort() {
+	c.aborted = true
+}
+
+// IsAborted is a Simple check for abort state
+func (c *Context) IsAborted() bool {
+	return c.aborted
 }
 
 // ValidationMiddleware validates requests based on provided chains.
@@ -387,6 +398,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		delete(ctx.Values, k)
 	}
 	ctx.ValidationErrs = nil // Clear validation errors to prevent leakage
+	ctx.aborted = false      // clear abort state and set to default false
 
 	defer r.pool.Put(ctx)
 	handler, params, middleware := r.findHandlerAndMiddleware(req.Method, req.URL.Path)
@@ -404,7 +416,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	for i := len(middleware) - 1; i >= 0; i-- {
 		mw := middleware[i]
 		next := wrapped
-		wrapped = func(c *Context) { mw(c, func() { next(c) }) }
+		wrapped = func(c *Context) {
+			mw(c, func() { // Check if execution was aborted before calling the next middleware
+				// Check if execution was aborted before calling the next middleware
+				if !c.IsAborted() {
+					next(c)
+				}
+			})
+		}
 	}
 
 	defer func() {
