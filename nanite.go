@@ -606,7 +606,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ctx.Writer = trackedWriter
 	ctx.Request = req
 	ctx.ParamsCount = 0 // Reset params count
-	ctx.Values = make(map[string]interface{})
+	ctx.ClearValues()
 	ctx.ValidationErrs = nil
 	ctx.aborted = false
 
@@ -692,9 +692,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // Set stores a value in the context's value map.
 func (c *Context) Set(key string, value interface{}) {
-	if c.Values == nil {
-		c.Values = make(map[string]interface{})
-	}
+	// if c.Values == nil {
+	// 	c.Values = make(map[string]interface{})
+	// }
 	c.Values[key] = value
 }
 
@@ -960,16 +960,45 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 				if err := ctx.Request.ParseForm(); err != nil {
 					errs = append(errs, ValidationError{Field: "", Error: "failed to parse form data"})
 				} else {
-					// Store form values in context for easy access
-					formData := make(map[string]interface{})
-					for key, values := range ctx.Request.Form {
-						if len(values) == 1 {
-							formData[key] = values[0]
+					// Clear existing formData if it exists
+					if formDataVal, exists := ctx.Values["formData"]; exists {
+						if formData, ok := formDataVal.(map[string]interface{}); ok {
+							// Clear the existing map instead of creating a new one
+							for k := range formData {
+								delete(formData, k)
+							}
+							// Reuse the existing map
+							for key, values := range ctx.Request.Form {
+								if len(values) == 1 {
+									formData[key] = values[0]
+								} else {
+									formData[key] = values
+								}
+							}
 						} else {
-							formData[key] = values
+							// If formData exists but isn't the right type, replace it
+							formData := make(map[string]interface{})
+							for key, values := range ctx.Request.Form {
+								if len(values) == 1 {
+									formData[key] = values[0]
+								} else {
+									formData[key] = values
+								}
+							}
+							ctx.Values["formData"] = formData
 						}
+					} else {
+						// First time creating formData
+						formData := make(map[string]interface{})
+						for key, values := range ctx.Request.Form {
+							if len(values) == 1 {
+								formData[key] = values[0]
+							} else {
+								formData[key] = values
+							}
+						}
+						ctx.Values["formData"] = formData
 					}
-					ctx.Values["formData"] = formData
 				}
 			}
 
@@ -988,17 +1017,40 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 					bodyBytes := buffer.Bytes()
 					ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-					// Parse JSON only if we successfully read the body
-					var body map[string]interface{}
-					if err := json.Unmarshal(bodyBytes, &body); err == nil {
-						ctx.Values["body"] = body
+					// Check if "body" already exists in ctx.Values
+					if bodyVal, exists := ctx.Values["body"]; exists {
+						if body, ok := bodyVal.(map[string]interface{}); ok {
+							// Clear the existing map instead of creating a new one
+							for k := range body {
+								delete(body, k)
+							}
+							// Parse JSON into the existing map
+							if err := json.Unmarshal(bodyBytes, &body); err != nil {
+								errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
+							}
+						} else {
+							// If it exists but isn't the right type, parse into a new map
+							var body map[string]interface{}
+							if err := json.Unmarshal(bodyBytes, &body); err == nil {
+								ctx.Values["body"] = body
+							} else {
+								errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
+							}
+						}
 					} else {
-						errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
+						// First time using "body"
+						var body map[string]interface{}
+						if err := json.Unmarshal(bodyBytes, &body); err == nil {
+							ctx.Values["body"] = body
+						} else {
+							errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
+						}
 					}
 				}
 			}
 		}
 
+		// Rest of the middleware remains unchanged
 		// Process validation chains
 		for _, chain := range chains {
 			var value interface{}
@@ -1195,4 +1247,11 @@ var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return new(bytes.Buffer)
 	},
+}
+
+// ClearValues efficiently clears the Values map without reallocating
+func (c *Context) ClearValues() {
+	for k := range c.Values {
+		delete(c.Values, k)
+	}
 }
