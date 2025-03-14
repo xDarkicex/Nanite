@@ -222,6 +222,38 @@ func (r *Router) Handle(method, path string, handler HandlerFunc, middleware ...
 	r.addRoute(method, path, handler, middleware...)
 }
 
+// Server Start Methods
+
+// Start launches the HTTP server on the specified port.
+// It configures timeouts and logs the server start.
+func (r *Router) Start(port string) error {
+	server := &http.Server{
+		Addr:           ":" + port,
+		Handler:        r,
+		ReadTimeout:    5 * time.Second,
+		WriteTimeout:   5 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1MB
+	}
+	fmt.Printf("Nanite server running on port %s\n", port)
+	return server.ListenAndServe()
+}
+
+// StartTLS launches the HTTPS server on the specified port with TLS.
+// It uses the provided certificate and key files for secure communication.
+func (r *Router) StartTLS(port, certFile, keyFile string) error {
+	server := &http.Server{
+		Addr:           ":" + port,
+		Handler:        r,
+		ReadTimeout:    5 * time.Second,
+		WriteTimeout:   5 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+	fmt.Printf("Nanite server running on port %s with TLS\n", port)
+	return server.ListenAndServeTLS(certFile, keyFile)
+}
+
 // WebSocket Support
 
 // WebSocket registers a WebSocket handler for the specified path.
