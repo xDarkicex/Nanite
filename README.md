@@ -1,27 +1,26 @@
-# Nanite Router
+# Nanite
 
-A lightweight, high-performance HTTP router for Go with an intuitive API inspired by Express.js.
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Go Reference](https://pkg.go.dev/badge/github.com/example/nanite.svg)](https://pkg.go.dev/github.com/example/nanite)
+[![Go Report Card](https://goreportcard.com/badge/github.com/example/nanite)](https://goreportcard.com/report/github.com/example/nanite)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
+Nanite is a lightweight, high-performance HTTP router for Go. It's designed to be developer-friendly, inspired by Express.js, and optimized for speed and efficiency in routing, middleware handling, and WebSocket support.
 
 ## Features
 
-- Express-like syntax for intuitive route definitions
-- Built-in support for middleware at global and route-specific levels
-- Named route parameters and wildcards
-- Route grouping and mounting for organized APIs
-- WebSocket support with seamless integration
-- Static file serving
-- Context object with helpful methods for request/response handling
-- Efficient routing with trie-based path matching
-- Optimized performance with object pooling to reduce GC overhead
-- Full support for all HTTP methods (GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD)
-- Customizable error handling
-- Simple and clean API
+- 🚀 **High Performance**: Optimized routing algorithm with minimal memory allocations
+- 🧩 **Middleware Support**: Express-like middleware system with global and route-specific middleware
+- 🔍 **Route Parameters**: Support for named parameters and wildcards in routes
+- ✅ **Validation**: Built-in request validation for forms, JSON, query parameters, and URL params
+- 🔌 **WebSockets**: First-class WebSocket support with automatic connection management
+- 📁 **Static File Serving**: Easy serving of static files and directories
+- 🛡️ **Context Pool**: Efficient context reuse through a sync.Pool
+- ⚡ **Fast Routing**: Optimized path matching with sorted children nodes
 
 ## Installation
 
 ```bash
-go get github.com/xDarkicex/nanite
+go get github.com/example/nanite
 ```
 
 ## Quick Start
@@ -30,96 +29,109 @@ go get github.com/xDarkicex/nanite
 package main
 
 import (
+    "fmt"
     "net/http"
-    "github.com/xDarkicex/nanite"
+    
+    "github.com/example/nanite"
 )
 
 func main() {
     // Create a new router
-    router := nanite.New()
-
-    // Define routes
-    router.Get("/", func(c *nanite.Context) {
-        c.String(http.StatusOK, "Hello, Nanite!")
+    r := nanite.New()
+    
+    // Add a simple route
+    r.Get("/hello", func(c *nanite.Context) {
+        c.String(http.StatusOK, "Hello, World!")
     })
-
-    router.Get("/users/:id", func(c *nanite.Context) {
-        id := c.Params["id"]
-        c.JSON(http.StatusOK, map[string]string{
-            "id":      id,
-            "message": "User details",
-        })
-    })
-
+    
     // Start the server
-    router.Start("8080")
+    fmt.Println("Server started at http://localhost:8080")
+    http.ListenAndServe(":8080", r)
 }
 ```
 
-## Route Parameters
+## Routing
 
-Nanite supports named route parameters (prefixed with `:`) and wildcards (`*`):
+Nanite supports all standard HTTP methods and dynamic route parameters:
 
 ```go
-// This will match /users/123
-router.Get("/users/:id", func(c *nanite.Context) {
-    id := c.Params["id"] // "123"
-    // ...
+// Basic routes
+r.Get("/users", listUsers)
+r.Post("/users", createUser)
+r.Put("/users/:id", updateUser)
+r.Delete("/users/:id", deleteUser)
+
+// Route parameters
+r.Get("/users/:id", func(c *nanite.Context) {
+    id, _ := c.GetParam("id")
+    c.JSON(http.StatusOK, map[string]interface{}{
+        "id": id,
+        "message": "User details",
+    })
 })
 
-// This will match any path starting with /files/
-router.Get("/files/*", func(c *nanite.Context) {
-    // Handles any path under /files/
-    // ...
-})
+// Wildcard routes
+r.Get("/files/*", serveFiles)
 ```
 
 ## Middleware
 
-Middleware can be added globally or to specific routes:
+Middleware functions can be added globally or to specific routes:
 
 ```go
-// Global middleware applied to all routes
-router.Use(func(c *nanite.Context, next func()) {
-    // Code executed before handler
-    start := time.Now()
-    
-    next() // Call the next middleware or route handler
-    
-    // Code executed after handler
-    duration := time.Since(start)
-    fmt.Printf("Request processed in %v\n", duration)
-})
+// Global middleware
+r.Use(LoggerMiddleware)
 
 // Route-specific middleware
-router.Get("/admin", func(c *nanite.Context) {
-    c.String(http.StatusOK, "Admin panel")
-}, authMiddleware)
+r.Get("/admin", adminHandler, AuthMiddleware)
+
+// Middleware function example
+func LoggerMiddleware(c *nanite.Context, next func()) {
+    // Code executed before the handler
+    startTime := time.Now()
+    
+    // Call the next middleware or handler
+    next()
+    
+    // Code executed after the handler
+    duration := time.Since(startTime)
+    fmt.Printf("[%s] %s - %dms\n", c.Request.Method, c.Request.URL.Path, duration.Milliseconds())
+}
 ```
 
-## Route Groups
+## Request Validation
 
-Organize related routes with groups:
+Nanite provides a powerful validation system:
 
 ```go
-// Create an API group with prefix and middleware
-api := router.Group("/api", apiKeyMiddleware)
+// Create validation rules
+emailValidation := nanite.NewValidationChain("email").Required().IsEmail()
+passwordValidation := nanite.NewValidationChain("password").Required().Length(8, 64)
 
-// Define routes within the group
-api.Get("/users", listUsers)
-api.Post("/users", createUser)
-api.Get("/users/:id", getUser)
-api.Put("/users/:id", updateUser)
-api.Delete("/users/:id", deleteUser)
+// Apply validation middleware
+r.Post("/register", registerHandler, nanite.ValidationMiddleware(emailValidation, passwordValidation))
+
+// In your handler, check for validation errors
+func registerHandler(c *nanite.Context) {
+    if !c.CheckValidation() {
+        // Validation failed, response already sent
+        return
+    }
+    
+    // Validation passed, continue with registration
+    email := c.FormValue("email")
+    password := c.FormValue("password")
+    // ...
+}
 ```
 
-## WebSocket Support
+## WebSockets
 
-Handling WebSocket connections is straightforward:
+WebSocket support is built into Nanite:
 
 ```go
-router.WebSocket("/ws", func(conn *websocket.Conn, ctx *nanite.Context) {
-    // Handle WebSocket connection
+r.WebSocket("/chat", func(conn *websocket.Conn, c *nanite.Context) {
+    // Handle the WebSocket connection
     for {
         messageType, p, err := conn.ReadMessage()
         if err != nil {
@@ -136,82 +148,77 @@ router.WebSocket("/ws", func(conn *websocket.Conn, ctx *nanite.Context) {
 
 ## Static File Serving
 
-Serve static files from a directory:
+Serve static files easily:
 
 ```go
-// Serve files from ./public directory under /static route
-router.ServeStatic("/static", "./public")
-
-// Now files in ./public/css/style.css can be accessed at /static/css/style.css
+// Serve files from the "public" directory under the "/static" path
+r.ServeStatic("/static", "./public")
 ```
 
-## Context Helper Methods
+## Context Methods
 
-Nanite provides a `Context` object with useful methods:
+Nanite provides a rich Context object with many helpful methods:
 
 ```go
-// Handling JSON requests
-router.Post("/api/data", func(c *nanite.Context) {
-    var data struct {
-        Name  string `json:"name"`
-        Email string `json:"email"`
-    }
-    
-    if err := c.Bind(&data); err != nil {
-        c.String(http.StatusBadRequest, "Invalid JSON")
-        return
-    }
-    
-    // Process data...
-    
-    c.JSON(http.StatusOK, map[string]string{
-        "status": "success",
-    })
-})
+// Parsing request data
+c.Bind(&user)          // Parse JSON request body
+c.FormValue("name")    // Get form field
+c.Query("sort")        // Get query parameter
+c.GetParam("id")       // Get route parameter
+c.File("avatar")       // Get uploaded file
 
-// Working with form data
-router.Post("/upload", func(c *nanite.Context) {
-    file, err := c.File("document")
-    if err != nil {
-        c.String(http.StatusBadRequest, "No file uploaded")
-        return
-    }
-    
-    // Process file...
-    
-    c.String(http.StatusOK, "File uploaded: "+file.Filename)
-})
+// Sending responses
+c.JSON(http.StatusOK, data)
+c.String(http.StatusOK, "Hello")
+c.HTML(http.StatusOK, "<h1>Hello</h1>")
+c.Redirect(http.StatusFound, "/login")
 
-// Setting cookies
-router.Get("/set-cookie", func(c *nanite.Context) {
-    c.Cookie("session", "abc123", "MaxAge", 3600, "Path", "/")
-    c.String(http.StatusOK, "Cookie set")
-})
+// Managing the response
+c.SetHeader("X-Custom", "value")
+c.Status(http.StatusCreated)
+c.Cookie("session", token)
+
+// Context data
+c.Set("user", user)
+c.Get("user")
 ```
 
 ## Custom Configuration
 
-Customize router behavior with configuration options:
+Customize the router with your own configuration:
 
 ```go
-router := nanite.New()
-
-// Set custom not found handler
-router.config.NotFoundHandler = func(c *nanite.Context) {
-    c.HTML(http.StatusNotFound, "<h1>Page not found</h1>")
-}
+r := nanite.New()
 
 // Set custom error handler
-router.config.ErrorHandler = func(c *nanite.Context, err error) {
+r.config.ErrorHandler = func(c *nanite.Context, err error) {
     c.JSON(http.StatusInternalServerError, map[string]string{
         "error": err.Error(),
     })
 }
+
+// Set custom 404 handler
+r.config.NotFoundHandler = func(c *nanite.Context) {
+    c.HTML(http.StatusNotFound, "<h1>Page not found</h1>")
+}
+
+// Configure WebSocket settings
+r.config.WebSocket.ReadTimeout = 30 * time.Second
+r.config.WebSocket.PingInterval = 15 * time.Second
 ```
 
-## Full Example: REST API
+## Performance
 
-Here's a more complete example of building a RESTful API:
+Nanite is designed for high performance with:
+
+- Minimal memory allocations through context pooling
+- Efficient routing algorithm using sorted children nodes
+- Pre-compiled middleware chains for faster execution
+- Optimized path matching
+
+## Example Application
+
+Here's a more complete example of a REST API:
 
 ```go
 package main
@@ -219,82 +226,114 @@ package main
 import (
     "log"
     "net/http"
-    "time"
     
-    "github.com/xDarkicex/nanite"
+    "github.com/example/nanite"
 )
 
-// Logger middleware
-func Logger() nanite.MiddlewareFunc {
-    return func(c *nanite.Context, next func()) {
-        start := time.Now()
-        
-        next()
-        
-        log.Printf("[%s] %s %s - %v",
-            c.Request.Method,
-            c.Request.URL.Path,
-            c.Request.RemoteAddr,
-            time.Since(start),
-        )
-    }
-}
-
-// Auth middleware
-func Auth() nanite.MiddlewareFunc {
-    return func(c *nanite.Context, next func()) {
-        token := c.Request.Header.Get("Authorization")
-        if token != "valid-token" {
-            c.Status(http.StatusUnauthorized)
-            return
-        }
-        next()
-    }
+type User struct {
+    ID    string `json:"id"`
+    Name  string `json:"name"`
+    Email string `json:"email"`
 }
 
 func main() {
-    router := nanite.New()
+    r := nanite.New()
     
-    // Add global middleware
-    router.Use(Logger())
+    // Middleware
+    r.Use(LoggerMiddleware)
     
-    // Public routes
-    router.Get("/", func(c *nanite.Context) {
-        c.String(http.StatusOK, "Welcome to the API")
+    // Routes
+    r.Get("/", func(c *nanite.Context) {
+        c.String(http.StatusOK, "API is running")
     })
     
-    // API routes with authentication
-    api := router.Group("/api", Auth())
+    // API group
+    apiRoutes(r)
     
-    api.Get("/users", func(c *nanite.Context) {
-        users := []map[string]string{
-            {"id": "1", "name": "Alice"},
-            {"id": "2", "name": "Bob"},
-        }
-        c.JSON(http.StatusOK, users)
-    })
+    // Static files
+    r.ServeStatic("/assets", "./public")
     
-    api.Get("/users/:id", func(c *nanite.Context) {
-        id, err := c.MustParam("id")
-        if err != nil {
-            c.String(http.StatusBadRequest, err.Error())
-            return
-        }
-        
-        // Simulate database lookup
-        user := map[string]string{
-            "id":    id,
-            "name":  "User " + id,
-            "email": "user" + id + "@example.com",
-        }
-        
-        c.JSON(http.StatusOK, user)
-    })
+    // Start server
+    log.Println("Server started at http://localhost:8080")
+    http.ListenAndServe(":8080", r)
+}
+
+func apiRoutes(r *nanite.Router) {
+    // User validation
+    nameValidation := nanite.NewValidationChain("name").Required()
+    emailValidation := nanite.NewValidationChain("email").Required().IsEmail()
     
-    // Start the server
-    router.Start("8080")
+    // User routes
+    r.Get("/users", listUsers)
+    r.Post("/users", createUser, nanite.ValidationMiddleware(nameValidation, emailValidation))
+    r.Get("/users/:id", getUser)
+    r.Put("/users/:id", updateUser, nanite.ValidationMiddleware(nameValidation, emailValidation))
+    r.Delete("/users/:id", deleteUser)
+}
+
+func listUsers(c *nanite.Context) {
+    users := []User{
+        {ID: "1", Name: "Alice", Email: "alice@example.com"},
+        {ID: "2", Name: "Bob", Email: "bob@example.com"},
+    }
+    c.JSON(http.StatusOK, users)
+}
+
+func createUser(c *nanite.Context) {
+    if !c.CheckValidation() {
+        return
+    }
+    
+    var user User
+    if err := c.Bind(&user); err != nil {
+        c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid user data"})
+        return
+    }
+    
+    user.ID = "3" // In a real app, generate a unique ID
+    c.JSON(http.StatusCreated, user)
+}
+
+func getUser(c *nanite.Context) {
+    id, _ := c.GetParam("id")
+    
+    // Simulate database lookup
+    user := User{ID: id, Name: "Sample User", Email: "user@example.com"}
+    c.JSON(http.StatusOK, user)
+}
+
+func updateUser(c *nanite.Context) {
+    if !c.CheckValidation() {
+        return
+    }
+    
+    id, _ := c.GetParam("id")
+    
+    var user User
+    if err := c.Bind(&user); err != nil {
+        c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid user data"})
+        return
+    }
+    
+    user.ID = id // Ensure ID matches the route parameter
+    c.JSON(http.StatusOK, user)
+}
+
+func deleteUser(c *nanite.Context) {
+    id, _ := c.GetParam("id")
+    c.JSON(http.StatusOK, map[string]string{"message": "User " + id + " deleted"})
+}
+
+func LoggerMiddleware(c *nanite.Context, next func()) {
+    log.Printf("Request: %s %s", c.Request.Method, c.Request.URL.Path)
+    next()
+    log.Printf("Response: %d", c.Writer.(*nanite.TrackedResponseWriter).Status())
 }
 ```
+
+## License
+
+MIT License
 
 ## Benchmarks
 
