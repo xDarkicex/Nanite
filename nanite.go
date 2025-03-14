@@ -23,7 +23,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Core Types and Data Structures
+// ### Core Types and Data Structures
 
 // HandlerFunc defines the signature for HTTP request handlers.
 // It takes a Context pointer to process the request and send a response.
@@ -45,7 +45,7 @@ type Param struct {
 }
 
 // Context holds the state of an HTTP request and response.
-// It is optimized for machine sympathy with a fixed-size array for params.
+// It is optimized with a fixed-size array for params.
 type Context struct {
 	Writer         http.ResponseWriter    // Response writer for sending data
 	Request        *http.Request          // Incoming HTTP request
@@ -87,7 +87,7 @@ type ValidationChain struct {
 	rules []ValidatorFunc // List of validation rules
 }
 
-// Router Configuration
+// ### Router Configuration
 
 // Config holds configuration options for the router.
 type Config struct {
@@ -106,7 +106,7 @@ type WebSocketConfig struct {
 	BufferSize     int           // Buffer size for read/write operations
 }
 
-// Router Structure
+// ### Router Structure
 
 // Router is the main router type that manages HTTP and WebSocket requests.
 type Router struct {
@@ -118,7 +118,7 @@ type Router struct {
 	httpClient *http.Client     // HTTP client for proxying or external requests
 }
 
-// Router Initialization
+// ### Router Initialization
 
 // New creates a new Router instance with default configurations.
 // It initializes the routing trees, context pool, and WebSocket settings.
@@ -148,7 +148,7 @@ func New() *Router {
 	// Initialize context pool with pre-allocated structures
 	r.pool.New = func() interface{} {
 		return &Context{
-			Params:  [5]Param{}, // Fixed-size array for params
+			Params:  [5]Param{},
 			Values:  make(map[string]interface{}, 8),
 			aborted: false,
 		}
@@ -162,7 +162,7 @@ func New() *Router {
 	return r
 }
 
-// Middleware Support
+// ### Middleware Support
 
 // Use adds one or more middleware functions to the router's global middleware stack.
 // These middleware functions will be executed for every request in order.
@@ -172,60 +172,51 @@ func (r *Router) Use(middleware ...MiddlewareFunc) {
 	r.middleware = append(r.middleware, middleware...)
 }
 
-// Route Registration
+// ### Route Registration
 
 // Get registers a handler for GET requests on the specified path.
-// Optional middleware can be provided to preprocess the request.
 func (r *Router) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.addRoute("GET", path, handler, middleware...)
 }
 
 // Post registers a handler for POST requests on the specified path.
-// Optional middleware can be provided to preprocess the request.
 func (r *Router) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.addRoute("POST", path, handler, middleware...)
 }
 
 // Put registers a handler for PUT requests on the specified path.
-// Optional middleware can be provided to preprocess the request.
 func (r *Router) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.addRoute("PUT", path, handler, middleware...)
 }
 
 // Delete registers a handler for DELETE requests on the specified path.
-// Optional middleware can be provided to preprocess the request.
 func (r *Router) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.addRoute("DELETE", path, handler, middleware...)
 }
 
 // Patch registers a handler for PATCH requests on the specified path.
-// Optional middleware can be provided to preprocess the request.
 func (r *Router) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.addRoute("PATCH", path, handler, middleware...)
 }
 
 // Options registers a handler for OPTIONS requests on the specified path.
-// Optional middleware can be provided to preprocess the request.
 func (r *Router) Options(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.addRoute("OPTIONS", path, handler, middleware...)
 }
 
 // Head registers a handler for HEAD requests on the specified path.
-// Optional middleware can be provided to preprocess the request.
 func (r *Router) Head(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.addRoute("HEAD", path, handler, middleware...)
 }
 
 // Handle registers a handler for the specified HTTP method and path.
-// Optional middleware can be provided to preprocess the request.
 func (r *Router) Handle(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.addRoute(method, path, handler, middleware...)
 }
 
-// Server Start Methods
+// ### Server Start Methods
 
 // Start launches the HTTP server on the specified port.
-// It configures timeouts and logs the server start.
 func (r *Router) Start(port string) error {
 	server := &http.Server{
 		Addr:           ":" + port,
@@ -240,7 +231,6 @@ func (r *Router) Start(port string) error {
 }
 
 // StartTLS launches the HTTPS server on the specified port with TLS.
-// It uses the provided certificate and key files for secure communication.
 func (r *Router) StartTLS(port, certFile, keyFile string) error {
 	server := &http.Server{
 		Addr:           ":" + port,
@@ -254,18 +244,16 @@ func (r *Router) StartTLS(port, certFile, keyFile string) error {
 	return server.ListenAndServeTLS(certFile, keyFile)
 }
 
-// WebSocket Support
+// ### WebSocket Support
 
 // WebSocket registers a WebSocket handler for the specified path.
-// It upgrades the HTTP connection to WebSocket and invokes the handler.
 func (r *Router) WebSocket(path string, handler WebSocketHandler, middleware ...MiddlewareFunc) {
 	r.addRoute("GET", path, r.wrapWebSocketHandler(handler), middleware...)
 }
 
-// Static File Serving
+// ### Static File Serving
 
 // ServeStatic serves static files from the specified root directory under the given prefix.
-// It supports GET and HEAD requests for file access.
 func (r *Router) ServeStatic(prefix, root string) {
 	if !strings.HasPrefix(prefix, "/") {
 		prefix = "/" + prefix
@@ -278,10 +266,9 @@ func (r *Router) ServeStatic(prefix, root string) {
 	r.addRoute("HEAD", prefix+"/*", handler)
 }
 
-// Validation Support
+// ### Validation Support
 
 // NewValidationChain creates a new ValidationChain for the specified field.
-// It is used to build a series of validation rules.
 func NewValidationChain(field string) *ValidationChain {
 	return &ValidationChain{field: field}
 }
@@ -486,10 +473,9 @@ func (vc *ValidationChain) IsObject() *ValidationChain {
 	return vc
 }
 
-// Helper Functions
+// ### Helper Functions
 
 // parsePath splits a path into segments for routing.
-// It handles leading/trailing slashes and returns an array of path parts.
 func parsePath(path string) []string {
 	if path == "/" {
 		return []string{}
@@ -513,7 +499,6 @@ func parsePath(path string) []string {
 }
 
 // addRoute adds a route to the router's tree for the given method and path.
-// It associates the handler and middleware with the route.
 func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -526,9 +511,15 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 		var key string
 		if strings.HasPrefix(part, ":") {
 			key = ":"
-		} else if part == "*" {
+			cur.paramName = part[1:] // Store parameter name without ':'
+		} else if strings.HasPrefix(part, "*") {
 			cur.wildcard = true
-			break
+			if len(part) > 1 {
+				cur.paramName = part[1:] // Store wildcard parameter name (e.g., "path")
+			} else {
+				cur.paramName = "*" // Default to "*" if unnamed
+			}
+			break // Wildcard ends the path
 		} else {
 			key = part
 		}
@@ -537,6 +528,9 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 			cur = cur.children[idx].node
 		} else {
 			newNode := &node{path: part, children: []childNode{}}
+			if strings.HasPrefix(part, ":") {
+				newNode.paramName = part[1:]
+			}
 			cur.children = insertChild(cur.children, key, newNode)
 			cur = newNode
 		}
@@ -549,7 +543,11 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 		next := wrapped
 		wrapped = func(c *Context) {
 			if !c.IsAborted() {
-				mw(c, func() { next(c) })
+				mw(c, func() {
+					if !c.IsAborted() { // Add check here
+						next(c)
+					}
+				})
 			}
 		}
 	}
@@ -557,35 +555,38 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 }
 
 // findHandlerAndMiddleware finds the handler and parameters for a given method and path.
-// It traverses the routing tree to locate the appropriate handler.
 func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []Param) {
 	r.mutex.RLock() // Use read lock only
 	defer r.mutex.RUnlock()
 	if tree, exists := r.trees[method]; exists {
 		cur := tree
 		var params []Param
-		start := 0
-		if len(path) > 0 && path[0] == '/' {
-			start = 1
-		}
-		for i := start; i <= len(path); i++ {
-			if i == len(path) || path[i] == '/' {
-				segment := path[start:i]
-				idx := sort.Search(len(cur.children), func(j int) bool { return cur.children[j].key >= segment })
-				if idx < len(cur.children) && cur.children[idx].key == segment {
-					cur = cur.children[idx].node
-				} else {
-					idx = sort.Search(len(cur.children), func(j int) bool { return cur.children[j].key >= ":" })
-					if idx < len(cur.children) && cur.children[idx].key == ":" {
-						cur = cur.children[idx].node
-						params = append(params, Param{Key: cur.path[1:], Value: segment})
-					} else if cur.wildcard {
-						break
-					} else {
-						return nil, nil
-					}
+		parts := parsePath(path)
+		for i, part := range parts {
+			if cur.wildcard {
+				// Capture remaining path as wildcard parameter
+				remainingPath := strings.Join(parts[i:], "/")
+				if cur.paramName != "" {
+					params = append(params, Param{Key: cur.paramName, Value: remainingPath})
 				}
-				start = i + 1
+				if cur.handler != nil {
+					return cur.handler, params
+				}
+				return nil, nil
+			}
+			idx := sort.Search(len(cur.children), func(j int) bool { return cur.children[j].key >= part })
+			if idx < len(cur.children) && cur.children[idx].key == part {
+				cur = cur.children[idx].node
+			} else {
+				idx = sort.Search(len(cur.children), func(j int) bool { return cur.children[j].key >= ":" })
+				if idx < len(cur.children) && cur.children[idx].key == ":" {
+					cur = cur.children[idx].node
+					if cur.paramName != "" {
+						params = append(params, Param{Key: cur.paramName, Value: part})
+					}
+				} else {
+					return nil, nil
+				}
 			}
 		}
 		if cur.handler != nil {
@@ -596,7 +597,6 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 }
 
 // ServeHTTP implements the http.Handler interface for the router.
-// It processes incoming HTTP requests and routes them appropriately.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Wrap the response writer to track if headers have been sent
 	trackedWriter := WrapResponseWriter(w)
@@ -618,29 +618,22 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Set up a goroutine to monitor for cancellation if the context can be canceled
 	if reqCtx.Done() != nil {
-		// We need a way to signal when we're completely done handling this request
 		finished := make(chan struct{})
 		defer close(finished)
 
 		go func() {
 			select {
 			case <-reqCtx.Done():
-				// Request was canceled or timed out
 				ctx.Abort()
-
-				// Only send error response if we haven't already sent headers
 				if !trackedWriter.Written() {
-					// Determine the appropriate status code based on the error
-					statusCode := http.StatusGatewayTimeout // Default to 504 for timeouts
-
+					statusCode := http.StatusGatewayTimeout
 					if reqCtx.Err() == context.Canceled {
-						statusCode = 499 // Nginx's code for client closed request
+						statusCode = 499 // Client closed request
 					}
-
 					http.Error(trackedWriter, fmt.Sprintf("Request %v", reqCtx.Err()), statusCode)
 				}
 			case <-finished:
-				// Handler completed normally, do nothing
+				// Handler completed normally
 			}
 		}()
 	}
@@ -664,13 +657,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	ctx.ParamsCount = len(params)
 
-	// Capture panics from handlers and provide proper error handling
+	// Capture panics from handlers
 	defer func() {
 		if err := recover(); err != nil {
-			// Abort the context to prevent further processing
 			ctx.Abort()
-
-			// Check if response was already started
 			if !trackedWriter.Written() {
 				if r.config.ErrorHandler != nil {
 					r.config.ErrorHandler(ctx, fmt.Errorf("%v", err))
@@ -678,23 +668,27 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 					http.Error(trackedWriter, "Internal Server Error", http.StatusInternalServerError)
 				}
 			} else {
-				// If headers were already sent, we can only log the error
-				fmt.Printf("Panic occurred after response was started: %v\n", err)
+				fmt.Printf("Panic occurred after response started: %v\n", err)
 			}
 		}
 	}()
 
-	// Execute the handler (middleware chain is already pre-built in addRoute)
+	// Execute the handler
 	handler(ctx)
+
+	if ctx.IsAborted() && !trackedWriter.Written() {
+		if r.config.NotFoundHandler != nil {
+			r.config.NotFoundHandler(ctx)
+		} else {
+			http.NotFound(trackedWriter, req)
+		}
+	}
 }
 
-// Context Methods
+// ### Context Methods
 
 // Set stores a value in the context's value map.
 func (c *Context) Set(key string, value interface{}) {
-	// if c.Values == nil {
-	// 	c.Values = make(map[string]interface{})
-	// }
 	c.Values[key] = value
 }
 
@@ -724,7 +718,7 @@ func (c *Context) Query(key string) string {
 	return c.Request.URL.Query().Get(key)
 }
 
-// GetParam retrieves a route parameter by key.
+// GetParam retrieves a route parameter by key, including wildcard (*).
 func (c *Context) GetParam(key string) (string, bool) {
 	for i := 0; i < c.ParamsCount; i++ {
 		if c.Params[i].Key == key {
@@ -838,45 +832,42 @@ func (c *Context) IsAborted() bool {
 	return c.aborted
 }
 
-// WebSocket Wrapper
+// ClearValues efficiently clears the Values map without reallocating.
+func (c *Context) ClearValues() {
+	for k := range c.Values {
+		delete(c.Values, k)
+	}
+}
+
+// ### WebSocket Wrapper
 
 // wrapWebSocketHandler wraps a WebSocketHandler into a HandlerFunc.
-// It handles the WebSocket upgrade process.
 func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
 	return func(ctx *Context) {
-		// Upgrade the connection
 		conn, err := r.config.Upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 		if err != nil {
 			http.Error(ctx.Writer, "Failed to upgrade to WebSocket", http.StatusBadRequest)
 			return
 		}
 
-		// Set connection parameters
 		conn.SetReadLimit(r.config.WebSocket.MaxMessageSize)
-
-		// Create a cancelable context for the WebSocket connection
 		wsCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Create a WaitGroup to ensure all goroutines are done before returning
 		var wg sync.WaitGroup
 
-		// Create a cleanup function to handle proper connection teardown
 		cleanup := func() {
-			cancel()     // Cancel context to signal all goroutines to exit
-			conn.Close() // Ensure connection is closed
-			wg.Wait()    // Wait for all goroutines to exit
+			cancel()
+			conn.Close()
+			wg.Wait()
 		}
 		defer cleanup()
 
-		// Set up ping/pong handlers to detect dead connections
 		conn.SetPongHandler(func(string) error {
-			// Reset read deadline when we get a pong response
 			conn.SetReadDeadline(time.Now().Add(r.config.WebSocket.ReadTimeout))
 			return nil
 		})
 
-		// Start a goroutine to periodically send pings
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -886,47 +877,33 @@ func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
 			for {
 				select {
 				case <-pingTicker.C:
-					// Set write deadline for the ping
 					conn.SetWriteDeadline(time.Now().Add(r.config.WebSocket.WriteTimeout))
 					if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-						// Connection is probably dead, exit the goroutine
 						return
 					}
 				case <-wsCtx.Done():
-					// Context canceled, exit the goroutine
 					return
 				}
 			}
 		}()
 
-		// Handle close signals for graceful shutdown
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-
-			// Listen for server shutdown or client closure
 			select {
 			case <-ctx.Request.Context().Done():
-				// Request context canceled (server shutting down)
 				conn.WriteControl(
 					websocket.CloseMessage,
 					websocket.FormatCloseMessage(websocket.CloseGoingAway, "Server shutting down"),
 					time.Now().Add(time.Second),
 				)
-				return
 			case <-wsCtx.Done():
-				// Connection context canceled (normal closure)
-				return
 			}
 		}()
 
-		// Set initial read deadline
 		conn.SetReadDeadline(time.Now().Add(r.config.WebSocket.ReadTimeout))
-
-		// Call the actual handler with the managed connection
 		handler(conn, ctx)
 
-		// After handler returns, ensure proper closure
 		conn.WriteControl(
 			websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
@@ -935,10 +912,9 @@ func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
 	}
 }
 
-// Validation Middleware
+// ### Validation Middleware
 
 // ValidationMiddleware returns a middleware function that performs validation.
-// It processes validation chains for the request and stores errors in the context.
 func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 	return func(ctx *Context, next func()) {
 		if ctx.IsAborted() {
@@ -947,27 +923,22 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 
 		var errs ValidationErrors
 
-		// Process validation for all request methods that might contain data
 		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
 			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
 
 			contentType := ctx.Request.Header.Get("Content-Type")
 
-			// Handle form data
 			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
 				strings.HasPrefix(contentType, "multipart/form-data") {
 
 				if err := ctx.Request.ParseForm(); err != nil {
 					errs = append(errs, ValidationError{Field: "", Error: "failed to parse form data"})
 				} else {
-					// Clear existing formData if it exists
 					if formDataVal, exists := ctx.Values["formData"]; exists {
 						if formData, ok := formDataVal.(map[string]interface{}); ok {
-							// Clear the existing map instead of creating a new one
 							for k := range formData {
 								delete(formData, k)
 							}
-							// Reuse the existing map
 							for key, values := range ctx.Request.Form {
 								if len(values) == 1 {
 									formData[key] = values[0]
@@ -976,7 +947,6 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 								}
 							}
 						} else {
-							// If formData exists but isn't the right type, replace it
 							formData := make(map[string]interface{})
 							for key, values := range ctx.Request.Form {
 								if len(values) == 1 {
@@ -988,7 +958,6 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 							ctx.Values["formData"] = formData
 						}
 					} else {
-						// First time creating formData
 						formData := make(map[string]interface{})
 						for key, values := range ctx.Request.Form {
 							if len(values) == 1 {
@@ -1002,34 +971,26 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 				}
 			}
 
-			// Handle JSON content
 			if strings.HasPrefix(contentType, "application/json") {
-				// Get a buffer from the pool and ensure it's empty
 				buffer := bufferPool.Get().(*bytes.Buffer)
 				buffer.Reset()
-				defer bufferPool.Put(buffer) // Return buffer to the pool when done
+				defer bufferPool.Put(buffer)
 
-				// Copy request body to buffer
 				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
 					errs = append(errs, ValidationError{Field: "", Error: "failed to read request body"})
 				} else {
-					// Create a new reader from buffer bytes and replace the request body
 					bodyBytes := buffer.Bytes()
 					ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-					// Check if "body" already exists in ctx.Values
 					if bodyVal, exists := ctx.Values["body"]; exists {
 						if body, ok := bodyVal.(map[string]interface{}); ok {
-							// Clear the existing map instead of creating a new one
 							for k := range body {
 								delete(body, k)
 							}
-							// Parse JSON into the existing map
 							if err := json.Unmarshal(bodyBytes, &body); err != nil {
 								errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
 							}
 						} else {
-							// If it exists but isn't the right type, parse into a new map
 							var body map[string]interface{}
 							if err := json.Unmarshal(bodyBytes, &body); err == nil {
 								ctx.Values["body"] = body
@@ -1038,7 +999,6 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 							}
 						}
 					} else {
-						// First time using "body"
 						var body map[string]interface{}
 						if err := json.Unmarshal(bodyBytes, &body); err == nil {
 							ctx.Values["body"] = body
@@ -1050,38 +1010,30 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 			}
 		}
 
-		// Rest of the middleware remains unchanged
-		// Process validation chains
 		for _, chain := range chains {
 			var value interface{}
 			var found bool
 
-			// Check query parameters first
 			if val := ctx.Request.URL.Query().Get(chain.field); val != "" {
 				value = val
 				found = true
 			} else if val, ok := ctx.GetParam(chain.field); ok {
-				// Then check URL parameters
 				value = val
 				found = true
 			} else if formData, ok := ctx.Values["formData"].(map[string]interface{}); ok {
-				// Check form data
 				if val, ok := formData[chain.field]; ok {
 					value = val
 					found = true
 				}
 			} else if body, ok := ctx.Values["body"].(map[string]interface{}); ok {
-				// Finally check JSON body fields
 				if val, ok := body[chain.field]; ok {
 					value = val
 					found = true
 				}
 			}
 
-			// Apply validation rules if the field was found
 			if found {
 				for _, rule := range chain.rules {
-					// Convert value to string if it's not already a string
 					strValue := ""
 					switch v := value.(type) {
 					case string:
@@ -1093,27 +1045,23 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 					case bool:
 						strValue = strconv.FormatBool(v)
 					case []interface{}:
-						// Handle array values (convert to JSON)
 						if jsonBytes, err := json.Marshal(v); err == nil {
 							strValue = string(jsonBytes)
 						}
 					case map[string]interface{}:
-						// Handle object values (convert to JSON)
 						if jsonBytes, err := json.Marshal(v); err == nil {
 							strValue = string(jsonBytes)
 						}
 					default:
-						// For any other type, try to convert to string
 						strValue = fmt.Sprintf("%v", v)
 					}
 
 					if err := rule(strValue); err != nil {
 						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
-						break // Stop on first validation error for this field
+						break
 					}
 				}
 			} else {
-				// Field not found in any source - check if it's required
 				for _, rule := range chain.rules {
 					if err := rule(""); err != nil {
 						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
@@ -1123,17 +1071,15 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 			}
 		}
 
-		// Store validation errors in context if any
 		if len(errs) > 0 {
 			ctx.ValidationErrs = errs
 		}
 
-		// Continue with the next middleware or handler
 		next()
 	}
 }
 
-// Helper Types and Functions
+// ### Helper Types and Functions
 
 // childNode represents a child node in the routing tree.
 type childNode struct {
@@ -1144,6 +1090,7 @@ type childNode struct {
 // node represents a node in the routing tree.
 type node struct {
 	path       string
+	paramName  string
 	wildcard   bool
 	handler    HandlerFunc
 	children   []childNode
@@ -1247,11 +1194,4 @@ var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return new(bytes.Buffer)
 	},
-}
-
-// ClearValues efficiently clears the Values map without reallocating
-func (c *Context) ClearValues() {
-	for k := range c.Values {
-		delete(c.Values, k)
-	}
 }
