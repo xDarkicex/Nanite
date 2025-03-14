@@ -1,3 +1,6 @@
+// Package nanite provides a lightweight, high-performance HTTP router for Go.
+// It is designed to be developer-friendly, inspired by Express.js, and optimized
+// for speed and efficiency in routing, middleware handling, and WebSocket support.
 package nanite
 
 import (
@@ -10,7 +13,6 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -21,71 +23,49 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Core Types (unchanged for brevity)
+// Core Types and Data Structures
+
+// HandlerFunc defines the signature for HTTP request handlers.
+// It takes a Context pointer to process the request and send a response.
 type HandlerFunc func(*Context)
+
+// WebSocketHandler defines the signature for WebSocket handlers.
+// It processes WebSocket connections using a connection and context.
 type WebSocketHandler func(*websocket.Conn, *Context)
+
+// MiddlewareFunc defines the signature for middleware functions.
+// It takes a Context and a next function to control request flow.
 type MiddlewareFunc func(*Context, func())
 
-type Context struct {
-	Writer         http.ResponseWriter
-	Request        *http.Request
-	Params         []Param
-	Values         map[string]interface{}
-	ValidationErrs ValidationErrors
-	aborted        bool
-}
-
+// Param represents a route parameter with a key-value pair.
+// Fields are aligned for simplicity and cache efficiency.
 type Param struct {
-	Key   string
-	Value string
+	Key   string // Parameter name
+	Value string // Parameter value
 }
 
-type Router struct {
-	trees      map[string]*node
-	pool       sync.Pool
-	mutex      sync.RWMutex
-	middleware []MiddlewareFunc
-	config     *Config
-	httpClient *http.Client
+// Context holds the state of an HTTP request and response.
+// It is optimized for machine sympathy with a fixed-size array for params.
+type Context struct {
+	Writer         http.ResponseWriter    // Response writer for sending data
+	Request        *http.Request          // Incoming HTTP request
+	Params         [5]Param               // Fixed-size array for route parameters
+	ParamsCount    int                    // Number of parameters used
+	Values         map[string]interface{} // General-purpose value storage
+	ValidationErrs ValidationErrors       // Validation errors, if any
+	aborted        bool                   // Flag indicating if request is aborted
 }
 
-// Add configuration options for WebSocket
-type WebSocketConfig struct {
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	PingInterval   time.Duration
-	MaxMessageSize int64
-	BufferSize     int // Buffer sizes for read/write
-}
-
-type Config struct {
-	NotFoundHandler HandlerFunc
-	ErrorHandler    func(*Context, error)
-	Upgrader        *websocket.Upgrader
-	WebSocket       *WebSocketConfig
-}
-
-type childNode struct {
-	key  string
-	node *node
-}
-
-type node struct {
-	path       string
-	wildcard   bool
-	handler    HandlerFunc
-	children   []childNode
-	middleware []MiddlewareFunc
-}
-
-// Validation Types (unchanged for brevity)
+// ValidationError represents a single validation error with field and message.
 type ValidationError struct {
-	Field string `json:"field"`
-	Error string `json:"error"`
+	Field string `json:"field"` // Field name that failed validation
+	Error string `json:"error"` // Error message describing the failure
 }
 
+// ValidationErrors is a slice of ValidationError for multiple validation failures.
 type ValidationErrors []ValidationError
 
+// Error returns a string representation of all validation errors.
 func (ve ValidationErrors) Error() string {
 	if len(ve) == 0 {
 		return "validation failed"
@@ -97,19 +77,184 @@ func (ve ValidationErrors) Error() string {
 	return fmt.Sprintf("validation failed: %s", strings.Join(errs, ", "))
 }
 
+// ValidatorFunc defines the signature for validation functions.
+// It validates a string value and returns an error if invalid.
 type ValidatorFunc func(string) error
 
-// Enhanced ValidationChain with type-specific validators
+// ValidationChain represents a chain of validation rules for a field.
 type ValidationChain struct {
-	field string
-	rules []ValidatorFunc
+	field string          // Field name to validate
+	rules []ValidatorFunc // List of validation rules
 }
 
+// Router Configuration
+
+// Config holds configuration options for the router.
+type Config struct {
+	NotFoundHandler HandlerFunc           // Handler for 404 responses
+	ErrorHandler    func(*Context, error) // Custom error handler
+	Upgrader        *websocket.Upgrader   // WebSocket upgrader configuration
+	WebSocket       *WebSocketConfig      // WebSocket-specific settings
+}
+
+// WebSocketConfig holds configuration options for WebSocket connections.
+type WebSocketConfig struct {
+	ReadTimeout    time.Duration // Timeout for reading messages
+	WriteTimeout   time.Duration // Timeout for writing messages
+	PingInterval   time.Duration // Interval for sending pings
+	MaxMessageSize int64         // Maximum message size in bytes
+	BufferSize     int           // Buffer size for read/write operations
+}
+
+// Router Structure
+
+// Router is the main router type that manages HTTP and WebSocket requests.
+type Router struct {
+	trees      map[string]*node // Routing trees by HTTP method
+	pool       sync.Pool        // Pool for reusing Context instances
+	mutex      sync.RWMutex     // Mutex for thread-safe middleware updates
+	middleware []MiddlewareFunc // Global middleware stack
+	config     *Config          // Router configuration
+	httpClient *http.Client     // HTTP client for proxying or external requests
+}
+
+// Router Initialization
+
+// New creates a new Router instance with default configurations.
+// It initializes the routing trees, context pool, and WebSocket settings.
+func New() *Router {
+	r := &Router{
+		trees: make(map[string]*node),
+		config: &Config{
+			WebSocket: &WebSocketConfig{
+				ReadTimeout:    60 * time.Second,
+				WriteTimeout:   10 * time.Second,
+				PingInterval:   30 * time.Second,
+				MaxMessageSize: 1024 * 1024, // 1MB
+				BufferSize:     1024,
+			},
+		},
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     120 * time.Second,
+				DisableCompression:  false,
+				ForceAttemptHTTP2:   false,
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+	// Initialize context pool with pre-allocated structures
+	r.pool.New = func() interface{} {
+		return &Context{
+			Params:  [5]Param{}, // Fixed-size array for params
+			Values:  make(map[string]interface{}, 8),
+			aborted: false,
+		}
+	}
+	// Set up WebSocket upgrader with default settings
+	r.config.Upgrader = &websocket.Upgrader{
+		CheckOrigin:     func(*http.Request) bool { return true },
+		ReadBufferSize:  r.config.WebSocket.BufferSize,
+		WriteBufferSize: r.config.WebSocket.BufferSize,
+	}
+	return r
+}
+
+// Middleware Support
+
+// Use adds one or more middleware functions to the router's global middleware stack.
+// These middleware functions will be executed for every request in order.
+func (r *Router) Use(middleware ...MiddlewareFunc) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.middleware = append(r.middleware, middleware...)
+}
+
+// Route Registration
+
+// Get registers a handler for GET requests on the specified path.
+// Optional middleware can be provided to preprocess the request.
+func (r *Router) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+	r.addRoute("GET", path, handler, middleware...)
+}
+
+// Post registers a handler for POST requests on the specified path.
+// Optional middleware can be provided to preprocess the request.
+func (r *Router) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+	r.addRoute("POST", path, handler, middleware...)
+}
+
+// Put registers a handler for PUT requests on the specified path.
+// Optional middleware can be provided to preprocess the request.
+func (r *Router) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+	r.addRoute("PUT", path, handler, middleware...)
+}
+
+// Delete registers a handler for DELETE requests on the specified path.
+// Optional middleware can be provided to preprocess the request.
+func (r *Router) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+	r.addRoute("DELETE", path, handler, middleware...)
+}
+
+// Patch registers a handler for PATCH requests on the specified path.
+// Optional middleware can be provided to preprocess the request.
+func (r *Router) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+	r.addRoute("PATCH", path, handler, middleware...)
+}
+
+// Options registers a handler for OPTIONS requests on the specified path.
+// Optional middleware can be provided to preprocess the request.
+func (r *Router) Options(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+	r.addRoute("OPTIONS", path, handler, middleware...)
+}
+
+// Head registers a handler for HEAD requests on the specified path.
+// Optional middleware can be provided to preprocess the request.
+func (r *Router) Head(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+	r.addRoute("HEAD", path, handler, middleware...)
+}
+
+// Handle registers a handler for the specified HTTP method and path.
+// Optional middleware can be provided to preprocess the request.
+func (r *Router) Handle(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+	r.addRoute(method, path, handler, middleware...)
+}
+
+// WebSocket Support
+
+// WebSocket registers a WebSocket handler for the specified path.
+// It upgrades the HTTP connection to WebSocket and invokes the handler.
+func (r *Router) WebSocket(path string, handler WebSocketHandler, middleware ...MiddlewareFunc) {
+	r.addRoute("GET", path, r.wrapWebSocketHandler(handler), middleware...)
+}
+
+// Static File Serving
+
+// ServeStatic serves static files from the specified root directory under the given prefix.
+// It supports GET and HEAD requests for file access.
+func (r *Router) ServeStatic(prefix, root string) {
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	fs := http.FileServer(http.Dir(root))
+	handler := func(c *Context) {
+		http.StripPrefix(prefix, fs).ServeHTTP(c.Writer, c.Request)
+	}
+	r.addRoute("GET", prefix+"/*", handler)
+	r.addRoute("HEAD", prefix+"/*", handler)
+}
+
+// Validation Support
+
+// NewValidationChain creates a new ValidationChain for the specified field.
+// It is used to build a series of validation rules.
 func NewValidationChain(field string) *ValidationChain {
 	return &ValidationChain{field: field}
 }
 
-// Basic validators
+// Required adds a rule that the field must not be empty.
 func (vc *ValidationChain) Required() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -120,10 +265,11 @@ func (vc *ValidationChain) Required() *ValidationChain {
 	return vc
 }
 
+// IsEmail adds a rule that the field must be a valid email address.
 func (vc *ValidationChain) IsEmail() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
-			return nil // Skip empty values unless Required is also used
+			return nil // Skip if empty unless required
 		}
 		if !strings.Contains(value, "@") || !strings.Contains(value, ".") {
 			return fmt.Errorf("invalid email format")
@@ -133,7 +279,7 @@ func (vc *ValidationChain) IsEmail() *ValidationChain {
 	return vc
 }
 
-// Enhanced numeric validators
+// IsInt adds a rule that the field must be an integer.
 func (vc *ValidationChain) IsInt() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -147,6 +293,7 @@ func (vc *ValidationChain) IsInt() *ValidationChain {
 	return vc
 }
 
+// IsFloat adds a rule that the field must be a floating-point number.
 func (vc *ValidationChain) IsFloat() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -160,6 +307,7 @@ func (vc *ValidationChain) IsFloat() *ValidationChain {
 	return vc
 }
 
+// IsBoolean adds a rule that the field must be a boolean value.
 func (vc *ValidationChain) IsBoolean() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -175,7 +323,7 @@ func (vc *ValidationChain) IsBoolean() *ValidationChain {
 	return vc
 }
 
-// Range validators
+// Min adds a rule that the field must be at least a specified integer value.
 func (vc *ValidationChain) Min(min int) *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -193,6 +341,7 @@ func (vc *ValidationChain) Min(min int) *ValidationChain {
 	return vc
 }
 
+// Max adds a rule that the field must be at most a specified integer value.
 func (vc *ValidationChain) Max(max int) *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -210,6 +359,7 @@ func (vc *ValidationChain) Max(max int) *ValidationChain {
 	return vc
 }
 
+// Length adds a rule that the field must have a length within the specified range.
 func (vc *ValidationChain) Length(min, max int) *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -227,11 +377,10 @@ func (vc *ValidationChain) Length(min, max int) *ValidationChain {
 	return vc
 }
 
-// Pattern matching
+// Matches adds a rule that the field must match the specified regular expression.
 func (vc *ValidationChain) Matches(pattern string) *ValidationChain {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		// If the regex is invalid, add a rule that always fails
 		vc.rules = append(vc.rules, func(value string) error {
 			return fmt.Errorf("invalid validation pattern")
 		})
@@ -250,7 +399,7 @@ func (vc *ValidationChain) Matches(pattern string) *ValidationChain {
 	return vc
 }
 
-// Option validators
+// OneOf adds a rule that the field must be one of the specified options.
 func (vc *ValidationChain) OneOf(options ...string) *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -266,7 +415,7 @@ func (vc *ValidationChain) OneOf(options ...string) *ValidationChain {
 	return vc
 }
 
-// Custom validator
+// Custom adds a custom validation function to the chain.
 func (vc *ValidationChain) Custom(fn func(string) error) *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -277,7 +426,7 @@ func (vc *ValidationChain) Custom(fn func(string) error) *ValidationChain {
 	return vc
 }
 
-// Array validation (for JSON arrays)
+// IsArray adds a rule that the field must be a JSON array.
 func (vc *ValidationChain) IsArray() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -291,7 +440,7 @@ func (vc *ValidationChain) IsArray() *ValidationChain {
 	return vc
 }
 
-// Object validation (for JSON objects)
+// IsObject adds a rule that the field must be a JSON object.
 func (vc *ValidationChain) IsObject() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
@@ -305,255 +454,10 @@ func (vc *ValidationChain) IsObject() *ValidationChain {
 	return vc
 }
 
-// Router Initialization
-func New() *Router {
-	r := &Router{
-		trees: make(map[string]*node),
-		config: &Config{
-			WebSocket: &WebSocketConfig{
-				ReadTimeout:    60 * time.Second,
-				WriteTimeout:   10 * time.Second,
-				PingInterval:   30 * time.Second,
-				MaxMessageSize: 1024 * 1024, // 1MB
-				BufferSize:     1024,
-			},
-		},
-		httpClient: &http.Client{
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 20,                // Increase from 10
-				IdleConnTimeout:     120 * time.Second, // Increase from 90
-				DisableCompression:  false,             // Add for most use cases
-				ForceAttemptHTTP2:   false,             // Add to enable HTTP/2
-			},
-			Timeout: 30 * time.Second, // Add default timeout
-		},
-	}
-	r.pool.New = func() interface{} {
-		return &Context{
-			Params: make([]Param, 0, 5),
-			Values: make(map[string]interface{}, 8),
-		}
-	}
-	r.config.Upgrader = &websocket.Upgrader{
-		CheckOrigin:     func(*http.Request) bool { return true },
-		ReadBufferSize:  r.config.WebSocket.BufferSize,
-		WriteBufferSize: r.config.WebSocket.BufferSize,
-	}
-	return r
-}
+// Helper Functions
 
-// Middleware Support
-func (r *Router) Use(middleware ...MiddlewareFunc) {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	r.middleware = append(r.middleware, middleware...)
-}
-
-func (c *Context) Abort() {
-	c.aborted = true
-}
-
-func (c *Context) IsAborted() bool {
-	return c.aborted
-}
-
-func (c *Context) HTTPClient() *http.Client {
-	if client, ok := c.Values["httpClient"].(*http.Client); ok {
-		return client
-	}
-	if router, ok := c.Values["router"].(*Router); ok {
-		return router.httpClient
-	}
-	return http.DefaultClient
-}
-
-// Pool for reusing request body buffers to reduce allocations
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
-}
-
-func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
-	return func(ctx *Context, next func()) {
-		if ctx.IsAborted() {
-			return
-		}
-
-		var errs ValidationErrors
-
-		// Initialize Values map if nil
-		if ctx.Values == nil {
-			ctx.Values = make(map[string]interface{})
-		}
-
-		// Process validation for methods that might contain data
-		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
-			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
-
-			contentType := ctx.Request.Header.Get("Content-Type")
-
-			// Handle JSON content
-			if strings.HasPrefix(contentType, "application/json") {
-				// Get a buffer from the pool
-				buffer := bufferPool.Get().(*bytes.Buffer)
-				buffer.Reset()
-				defer bufferPool.Put(buffer)
-
-				// Read the entire body into the buffer
-				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
-					errs = append(errs, ValidationError{Field: "", Error: "failed to read request body"})
-				} else {
-					bodyBytes := buffer.Bytes()
-
-					// Parse JSON once
-					var body map[string]interface{}
-					if err := json.Unmarshal(bodyBytes, &body); err != nil {
-						errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
-					} else {
-						// Store parsed body in context for validation and binding
-						ctx.Values["body"] = body
-						// Replace request body with a new reader for subsequent reads
-						ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-					}
-				}
-			}
-
-			// Handle form data
-			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
-				strings.HasPrefix(contentType, "multipart/form-data") {
-				if err := ctx.Request.ParseForm(); err != nil {
-					errs = append(errs, ValidationError{Field: "", Error: "failed to parse form data"})
-				} else {
-					// Store form values in context
-					formData := make(map[string]interface{})
-					for key, values := range ctx.Request.Form {
-						if len(values) == 1 {
-							formData[key] = values[0]
-						} else {
-							formData[key] = values
-						}
-					}
-					ctx.Values["formData"] = formData
-				}
-			}
-		}
-
-		// Process validation chains
-		for _, chain := range chains {
-			var value interface{}
-			var found bool
-
-			// Check query parameters
-			if val := ctx.Request.URL.Query().Get(chain.field); val != "" {
-				value = val
-				found = true
-			} else if val, ok := ctx.GetParam(chain.field); ok {
-				// Check URL parameters
-				value = val
-				found = true
-			} else if formData, ok := ctx.Values["formData"].(map[string]interface{}); ok {
-				// Check form data
-				if val, ok := formData[chain.field]; ok {
-					value = val
-					found = true
-				}
-			} else if body, ok := ctx.Values["body"].(map[string]interface{}); ok {
-				// Check JSON body
-				if val, ok := body[chain.field]; ok {
-					value = val
-					found = true
-				}
-			}
-
-			// Apply validation rules if the field was found
-			if found {
-				for _, rule := range chain.rules {
-					// Convert value to string for validation
-					strValue := fmt.Sprintf("%v", value)
-					if err := rule(strValue); err != nil {
-						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
-						break
-					}
-				}
-			} else {
-				// Check if the field is required
-				for _, rule := range chain.rules {
-					if err := rule(""); err != nil {
-						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
-						break
-					}
-				}
-			}
-		}
-
-		// Store validation errors in context if any
-		if len(errs) > 0 {
-			ctx.ValidationErrs = errs
-		}
-
-		// Continue with the next middleware or handler
-		next()
-	}
-}
-
-// Route Registration
-func (r *Router) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
-	r.addRoute("GET", path, handler, middleware...)
-}
-
-func (r *Router) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
-	r.addRoute("POST", path, handler, middleware...)
-}
-
-func (r *Router) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
-	r.addRoute("PUT", path, handler, middleware...)
-}
-
-func (r *Router) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
-	r.addRoute("DELETE", path, handler, middleware...)
-}
-
-func (r *Router) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
-	r.addRoute("PATCH", path, handler, middleware...)
-}
-
-func (r *Router) Options(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
-	r.addRoute("OPTIONS", path, handler, middleware...)
-}
-
-func (r *Router) Head(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
-	r.addRoute("HEAD", path, handler, middleware...)
-}
-
-func (r *Router) Handle(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
-	r.addRoute(method, path, handler, middleware...)
-}
-
-func (r *Router) WebSocket(path string, handler WebSocketHandler, middleware ...MiddlewareFunc) {
-	r.addRoute("GET", path, r.wrapWebSocketHandler(handler), middleware...)
-}
-
-func (r *Router) ServeStatic(prefix, root string) {
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	fs := http.FileServer(http.Dir(root))
-	handler := func(c *Context) {
-		http.StripPrefix(prefix, fs).ServeHTTP(c.Writer, c.Request)
-	}
-	r.addRoute("GET", prefix+"/*", handler)
-	r.addRoute("HEAD", prefix+"/*", handler)
-}
-
-func (r *Router) Group(prefix string, middleware ...MiddlewareFunc) *Router {
-	sub := New()
-	sub.middleware = append(sub.middleware, middleware...)
-	r.Mount(prefix, sub)
-	return sub
-}
-
+// parsePath splits a path into segments for routing.
+// It handles leading/trailing slashes and returns an array of path parts.
 func parsePath(path string) []string {
 	if path == "/" {
 		return []string{}
@@ -576,45 +480,8 @@ func parsePath(path string) []string {
 	return parts
 }
 
-func (r *Router) Mount(prefix string, subRouter *Router) {
-	prefix = strings.Trim(prefix, "/")
-	parts := parsePath(prefix)
-	for method, tree := range subRouter.trees {
-		if _, exists := r.trees[method]; !exists {
-			r.trees[method] = &node{children: []childNode{}}
-		}
-		cur := r.trees[method]
-		for _, part := range parts {
-			idx := sort.Search(len(cur.children), func(i int) bool { return cur.children[i].key >= part })
-			if idx < len(cur.children) && cur.children[idx].key == part {
-				cur = cur.children[idx].node
-			} else {
-				newNode := &node{path: part, children: []childNode{}}
-				cur.children = insertChild(cur.children, part, newNode)
-				cur = newNode
-			}
-		}
-		cur.middleware = subRouter.middleware
-		for _, child := range tree.children {
-			cur.children = insertChild(cur.children, child.key, child.node)
-		}
-	}
-}
-
-func insertChild(children []childNode, key string, node *node) []childNode {
-	idx := sort.Search(len(children), func(i int) bool { return children[i].key >= key })
-	if idx < len(children) && children[idx].key == key {
-		children[idx].node = node
-	} else {
-		newChild := childNode{key: key, node: node}
-		children = append(children, childNode{})
-		copy(children[idx+1:], children[idx:])
-		children[idx] = newChild
-	}
-	return children
-}
-
-// Optimized addRoute: Pre-build middleware chain
+// addRoute adds a route to the router's tree for the given method and path.
+// It associates the handler and middleware with the route.
 func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -657,7 +524,8 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 	cur.handler = wrapped
 }
 
-// Optimized findHandlerAndMiddleware: Pre-allocate middleware slice
+// findHandlerAndMiddleware finds the handler and parameters for a given method and path.
+// It traverses the routing tree to locate the appropriate handler.
 func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []Param) {
 	r.mutex.RLock() // Use read lock only
 	defer r.mutex.RUnlock()
@@ -695,7 +563,8 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 	return nil, nil
 }
 
-// Improved ServeHTTP with proper timeout and cancellation support
+// ServeHTTP implements the http.Handler interface for the router.
+// It processes incoming HTTP requests and routes them appropriately.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Wrap the response writer to track if headers have been sent
 	trackedWriter := WrapResponseWriter(w)
@@ -704,12 +573,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ctx := r.pool.Get().(*Context)
 	ctx.Writer = trackedWriter
 	ctx.Request = req
-	ctx.Params = ctx.Params[:0] // Reuse slice capacity but clear contents
-
-	// Replace the Values map for a clean state
+	ctx.ParamsCount = 0 // Reset params count
 	ctx.Values = make(map[string]interface{})
-	ctx.Values["router"] = r // Store router reference for access to httpClient
-
 	ctx.ValidationErrs = nil
 	ctx.aborted = false
 
@@ -760,7 +625,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Set parameters to context
-	ctx.Params = params
+	for i, p := range params {
+		if i < len(ctx.Params) {
+			ctx.Params[i] = p
+		}
+	}
+	ctx.ParamsCount = len(params)
 
 	// Capture panics from handlers and provide proper error handling
 	defer func() {
@@ -786,112 +656,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	handler(ctx)
 }
 
-// TrackedResponseWriter wraps http.ResponseWriter to track if headers have been sent
-type TrackedResponseWriter struct {
-	http.ResponseWriter
-	statusCode    int
-	headerWritten bool
-	bytesWritten  int64
-}
+// Context Methods
 
-// WrapResponseWriter creates a new TrackedResponseWriter
-func WrapResponseWriter(w http.ResponseWriter) *TrackedResponseWriter {
-	return &TrackedResponseWriter{
-		ResponseWriter: w,
-		statusCode:     http.StatusOK, // Default status code
-	}
-}
-
-// WriteHeader records that headers have been written
-func (w *TrackedResponseWriter) WriteHeader(statusCode int) {
-	if !w.headerWritten {
-		w.statusCode = statusCode
-		w.ResponseWriter.WriteHeader(statusCode)
-		w.headerWritten = true
-	}
-}
-
-// Write records that data (and implicitly headers) have been written
-func (w *TrackedResponseWriter) Write(b []byte) (int, error) {
-	if !w.headerWritten {
-		w.WriteHeader(http.StatusOK) // Implicit 200 OK
-	}
-	n, err := w.ResponseWriter.Write(b)
-	w.bytesWritten += int64(n)
-	return n, err
-}
-
-// Status returns the HTTP status code that was set
-func (w *TrackedResponseWriter) Status() int {
-	return w.statusCode
-}
-
-// Written returns whether headers have been sent
-func (w *TrackedResponseWriter) Written() bool {
-	return w.headerWritten
-}
-
-// BytesWritten returns the number of bytes written
-func (w *TrackedResponseWriter) BytesWritten() int64 {
-	return w.bytesWritten
-}
-
-// Unwrap returns the original ResponseWriter
-func (w *TrackedResponseWriter) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
-}
-
-// Flush implements http.Flusher interface if the underlying writer supports it
-func (w *TrackedResponseWriter) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-// Hijack implements http.Hijacker interface if the underlying writer supports it
-func (w *TrackedResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if hijacker, ok := w.ResponseWriter.(http.Hijacker); ok {
-		return hijacker.Hijack()
-	}
-	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
-}
-
-// Push implements http.Pusher interface if the underlying writer supports it (for HTTP/2)
-func (w *TrackedResponseWriter) Push(target string, opts *http.PushOptions) error {
-	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
-		return pusher.Push(target, opts)
-	}
-	return fmt.Errorf("underlying ResponseWriter does not implement http.Pusher")
-}
-
-// Optimized Server Start Methods: Add timeouts
-func (r *Router) Start(port string) error {
-	server := &http.Server{
-		Addr:           ":" + port,
-		Handler:        r,
-		ReadTimeout:    5 * time.Second,
-		WriteTimeout:   5 * time.Second,
-		IdleTimeout:    60 * time.Second,
-		MaxHeaderBytes: 1 << 20, // 1MB
-	}
-	fmt.Printf("Nanite server running on port %s\n", port)
-	return server.ListenAndServe()
-}
-
-func (r *Router) StartTLS(port, certFile, keyFile string) error {
-	server := &http.Server{
-		Addr:           ":" + port,
-		Handler:        r,
-		ReadTimeout:    5 * time.Second,
-		WriteTimeout:   5 * time.Second,
-		IdleTimeout:    60 * time.Second,
-		MaxHeaderBytes: 1 << 20,
-	}
-	fmt.Printf("Nanite server running on port %s with TLS\n", port)
-	return server.ListenAndServeTLS(certFile, keyFile)
-}
-
-// Context Methods (unchanged for brevity)
+// Set stores a value in the context's value map.
 func (c *Context) Set(key string, value interface{}) {
 	if c.Values == nil {
 		c.Values = make(map[string]interface{})
@@ -899,6 +666,7 @@ func (c *Context) Set(key string, value interface{}) {
 	c.Values[key] = value
 }
 
+// Get retrieves a value from the context's value map.
 func (c *Context) Get(key string) interface{} {
 	if c.Values != nil {
 		return c.Values[key]
@@ -906,54 +674,35 @@ func (c *Context) Get(key string) interface{} {
 	return nil
 }
 
+// Bind decodes the request body into the provided interface.
 func (c *Context) Bind(v interface{}) error {
-	if body, ok := c.Values["body"]; ok {
-		// Use pre-parsed body if available
-		bodyBytes, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("failed to marshal pre-parsed body: %w", err)
-		}
-		return json.Unmarshal(bodyBytes, v)
-	}
 	if err := json.NewDecoder(c.Request.Body).Decode(v); err != nil {
 		return fmt.Errorf("failed to decode JSON: %w", err)
 	}
 	return nil
 }
 
+// FormValue returns the value of the specified form field.
 func (c *Context) FormValue(key string) string {
 	return c.Request.FormValue(key)
 }
 
+// Query returns the value of the specified query parameter.
 func (c *Context) Query(key string) string {
 	return c.Request.URL.Query().Get(key)
 }
 
+// GetParam retrieves a route parameter by key.
 func (c *Context) GetParam(key string) (string, bool) {
-	// Unrolled loop for small slices can be faster
-	params := c.Params
-	n := len(params)
-
-	if n > 0 && params[0].Key == key {
-		return params[0].Value, true
-	}
-	if n > 1 && params[1].Key == key {
-		return params[1].Value, true
-	}
-	if n > 2 && params[2].Key == key {
-		return params[2].Value, true
-	}
-
-	// Fall back to regular loop for more params
-	for i := 3; i < n; i++ {
-		if params[i].Key == key {
-			return params[i].Value, true
+	for i := 0; i < c.ParamsCount; i++ {
+		if c.Params[i].Key == key {
+			return c.Params[i].Value, true
 		}
 	}
-
 	return "", false
 }
 
+// MustParam retrieves a required route parameter or returns an error.
 func (c *Context) MustParam(key string) (string, error) {
 	if val, ok := c.GetParam(key); ok && val != "" {
 		return val, nil
@@ -961,6 +710,7 @@ func (c *Context) MustParam(key string) (string, error) {
 	return "", fmt.Errorf("required parameter %s missing or empty", key)
 }
 
+// File retrieves a file from the request's multipart form.
 func (c *Context) File(key string) (*multipart.FileHeader, error) {
 	if c.Request.MultipartForm == nil {
 		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
@@ -974,6 +724,7 @@ func (c *Context) File(key string) (*multipart.FileHeader, error) {
 	return fh, nil
 }
 
+// JSON sends a JSON response with the specified status code.
 func (c *Context) JSON(status int, data interface{}) {
 	c.Writer.Header().Set("Content-Type", "application/json")
 	c.Writer.WriteHeader(status)
@@ -982,26 +733,31 @@ func (c *Context) JSON(status int, data interface{}) {
 	}
 }
 
+// String sends a plain text response with the specified status code.
 func (c *Context) String(status int, data string) {
 	c.Writer.Header().Set("Content-Type", "text/plain")
 	c.Writer.WriteHeader(status)
 	c.Writer.Write([]byte(data))
 }
 
+// HTML sends an HTML response with the specified status code.
 func (c *Context) HTML(status int, html string) {
 	c.Writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	c.Writer.WriteHeader(status)
 	c.Writer.Write([]byte(html))
 }
 
+// SetHeader sets a header on the response writer.
 func (c *Context) SetHeader(key, value string) {
 	c.Writer.Header().Set(key, value)
 }
 
+// Status sets the response status code.
 func (c *Context) Status(status int) {
 	c.Writer.WriteHeader(status)
 }
 
+// Redirect sends a redirect response to the specified URL.
 func (c *Context) Redirect(status int, url string) {
 	if status < 300 || status > 399 {
 		c.String(http.StatusBadRequest, "redirect status must be 3xx")
@@ -1011,6 +767,7 @@ func (c *Context) Redirect(status int, url string) {
 	c.Writer.WriteHeader(status)
 }
 
+// Cookie sets a cookie on the response.
 func (c *Context) Cookie(name, value string, options ...interface{}) {
 	cookie := &http.Cookie{Name: name, Value: value}
 	for i := 0; i < len(options)-1; i += 2 {
@@ -1030,6 +787,7 @@ func (c *Context) Cookie(name, value string, options ...interface{}) {
 	http.SetCookie(c.Writer, cookie)
 }
 
+// CheckValidation checks if there are validation errors and sends a response if present.
 func (c *Context) CheckValidation() bool {
 	if len(c.ValidationErrs) > 0 {
 		c.JSON(http.StatusBadRequest, map[string]interface{}{"errors": c.ValidationErrs})
@@ -1038,7 +796,20 @@ func (c *Context) CheckValidation() bool {
 	return true
 }
 
-// Improved WebSocket handler wrapper with proper lifecycle management
+// Abort marks the request as aborted, preventing further processing.
+func (c *Context) Abort() {
+	c.aborted = true
+}
+
+// IsAborted checks if the request has been aborted.
+func (c *Context) IsAborted() bool {
+	return c.aborted
+}
+
+// WebSocket Wrapper
+
+// wrapWebSocketHandler wraps a WebSocketHandler into a HandlerFunc.
+// It handles the WebSocket upgrade process.
 func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
 	return func(ctx *Context) {
 		// Upgrade the connection
@@ -1132,380 +903,264 @@ func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
 	}
 }
 
-// ### Logger will later move to its own file.
-// LogLevel represents the severity of a log message
-type LogLevel int
+// Validation Middleware
 
-const (
-	DEBUG LogLevel = iota
-	INFO
-	WARN
-	ERROR
-	FATAL
-)
-
-// String returns the string representation of the log level
-func (l LogLevel) String() string {
-	switch l {
-	case DEBUG:
-		return "DEBUG"
-	case INFO:
-		return "INFO"
-	case WARN:
-		return "WARN"
-	case ERROR:
-		return "ERROR"
-	case FATAL:
-		return "FATAL"
-	default:
-		return "UNKNOWN"
-	}
-}
-
-// LogColor represents ANSI color codes for colorized terminal output
-var LogColor = map[LogLevel]string{
-	DEBUG: "\033[37m", // White
-	INFO:  "\033[32m", // Green
-	WARN:  "\033[33m", // Yellow
-	ERROR: "\033[31m", // Red
-	FATAL: "\033[35m", // Magenta
-}
-
-// LogEntry represents a single log message
-type LogEntry struct {
-	Time      time.Time
-	Level     LogLevel
-	Method    string
-	Path      string
-	IP        string
-	Status    int
-	Latency   time.Duration
-	BytesSent int64
-	UserAgent string
-	RequestID string
-	Error     error
-}
-
-// LoggerConfig provides configuration options for the logger
-type LoggerConfig struct {
-	Level          LogLevel
-	Async          bool
-	BufferSize     int
-	Format         string // "text", "json", or "color"
-	Output         *os.File
-	ExcludePaths   []string
-	IncludeHeaders []string
-}
-
-// defaultLoggerConfig provides sensible defaults
-func defaultLoggerConfig() LoggerConfig {
-	return LoggerConfig{
-		Level:          INFO,
-		Async:          true,
-		BufferSize:     1000,
-		Format:         "color",
-		Output:         os.Stdout,
-		ExcludePaths:   []string{"/health", "/metrics"},
-		IncludeHeaders: []string{"User-Agent", "Referer"},
-	}
-}
-
-// Logger is the actual logger implementation
-type Logger struct {
-	config   LoggerConfig
-	entries  chan LogEntry
-	wg       sync.WaitGroup
-	shutdown chan struct{}
-	once     sync.Once
-}
-
-// NewLogger creates a new logger instance with the provided config
-func NewLogger(config *LoggerConfig) *Logger {
-	cfg := defaultLoggerConfig()
-	if config != nil {
-		if config.Level > 0 {
-			cfg.Level = config.Level
-		}
-		if config.BufferSize > 0 {
-			cfg.BufferSize = config.BufferSize
-		}
-		if config.Format != "" {
-			cfg.Format = config.Format
-		}
-		if config.Output != nil {
-			cfg.Output = config.Output
-		}
-		if len(config.ExcludePaths) > 0 {
-			cfg.ExcludePaths = config.ExcludePaths
-		}
-		if len(config.IncludeHeaders) > 0 {
-			cfg.IncludeHeaders = config.IncludeHeaders
-		}
-		cfg.Async = config.Async
-	}
-
-	logger := &Logger{
-		config:   cfg,
-		entries:  make(chan LogEntry, cfg.BufferSize),
-		shutdown: make(chan struct{}),
-	}
-
-	if cfg.Async {
-		logger.wg.Add(1)
-		go logger.processEntries()
-	}
-
-	return logger
-}
-
-// processEntries handles log entries asynchronously
-func (l *Logger) processEntries() {
-	defer l.wg.Done()
-
-	for {
-		select {
-		case entry := <-l.entries:
-			l.writeEntry(entry)
-		case <-l.shutdown:
-			// Drain remaining entries when shutting down
-			for {
-				select {
-				case entry := <-l.entries:
-					l.writeEntry(entry)
-				default:
-					return
-				}
-			}
-		}
-	}
-}
-
-// Close shuts down the logger gracefully
-func (l *Logger) Close() {
-	l.once.Do(func() {
-		close(l.shutdown)
-		l.wg.Wait()
-
-		// Process any remaining entries synchronously
-		for len(l.entries) > 0 {
-			l.writeEntry(<-l.entries)
-		}
-	})
-}
-
-// shouldSkipPath determines if a path should be excluded from logging
-func (l *Logger) shouldSkipPath(path string) bool {
-	for _, p := range l.config.ExcludePaths {
-		if p == path {
-			return true
-		}
-	}
-	return false
-}
-
-// writeEntry formats and writes a log entry
-func (l *Logger) writeEntry(entry LogEntry) {
-	// Skip low-priority messages based on configured level
-	if entry.Level < l.config.Level {
-		return
-	}
-
-	switch l.config.Format {
-	case "json":
-		fmt.Fprintf(l.config.Output,
-			`{"time":"%s","level":"%s","method":"%s","path":"%s","ip":"%s","status":%d,"latency":"%s","bytes_sent":%d,"user_agent":"%s","request_id":"%s"%s}`,
-			entry.Time.Format(time.RFC3339),
-			entry.Level.String(),
-			entry.Method,
-			entry.Path,
-			entry.IP,
-			entry.Status,
-			entry.Latency.String(),
-			entry.BytesSent,
-			entry.UserAgent,
-			entry.RequestID,
-			func() string {
-				if entry.Error != nil {
-					return fmt.Sprintf(`,"error":"%s"`, entry.Error.Error())
-				}
-				return ""
-			}(),
-		)
-		fmt.Fprintln(l.config.Output)
-	case "color":
-		statusColor := "\033[32m" // Green by default
-		if entry.Status >= 300 && entry.Status < 400 {
-			statusColor = "\033[33m" // Yellow for redirects
-		} else if entry.Status >= 400 && entry.Status < 500 {
-			statusColor = "\033[31m" // Red for client errors
-		} else if entry.Status >= 500 {
-			statusColor = "\033[35m" // Magenta for server errors
+// ValidationMiddleware returns a middleware function that performs validation.
+// It processes validation chains for the request and stores errors in the context.
+func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
+	return func(ctx *Context, next func()) {
+		if ctx.IsAborted() {
+			return
 		}
 
-		fmt.Fprintf(l.config.Output,
-			"%s[%s] %s%s %s %s | %s%d %s| %s | %s%s%s\n",
-			LogColor[entry.Level],
-			entry.Level.String(),
-			entry.Time.Format("2006-01-02 15:04:05"),
-			"\033[0m",
-			entry.Method,
-			entry.Path,
-			statusColor, entry.Status, "\033[0m",
-			entry.Latency.String(),
-			func() string {
-				if entry.Error != nil {
-					return "\033[31mERROR: " + entry.Error.Error() + "\033[0m"
-				}
-				return ""
-			}(),
-			func() string {
-				if entry.RequestID != "" {
-					return " | ID:" + entry.RequestID
-				}
-				return ""
-			}(),
-			"\033[0m",
-		)
-	default: // plain text
-		fmt.Fprintf(l.config.Output,
-			"[%s] [%s] %s %s %s | %d | %s | %d bytes | %s%s%s\n",
-			entry.Time.Format("2006-01-02 15:04:05"),
-			entry.Level.String(),
-			entry.Method,
-			entry.Path,
-			entry.IP,
-			entry.Status,
-			entry.Latency.String(),
-			entry.BytesSent,
-			func() string {
-				if entry.Error != nil {
-					return "ERROR: " + entry.Error.Error() + " | "
-				}
-				return ""
-			}(),
-			func() string {
-				if entry.RequestID != "" {
-					return "ID:" + entry.RequestID + " | "
-				}
-				return ""
-			}(),
-			func() string {
-				if entry.UserAgent != "" {
-					if len(entry.UserAgent) > 50 {
-						return entry.UserAgent[:47] + "..."
+		var errs ValidationErrors
+
+		// Process validation for all request methods that might contain data
+		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
+			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
+
+			contentType := ctx.Request.Header.Get("Content-Type")
+
+			// Handle form data
+			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
+				strings.HasPrefix(contentType, "multipart/form-data") {
+
+				if err := ctx.Request.ParseForm(); err != nil {
+					errs = append(errs, ValidationError{Field: "", Error: "failed to parse form data"})
+				} else {
+					// Store form values in context for easy access
+					formData := make(map[string]interface{})
+					for key, values := range ctx.Request.Form {
+						if len(values) == 1 {
+							formData[key] = values[0]
+						} else {
+							formData[key] = values
+						}
 					}
-					return entry.UserAgent
+					ctx.Values["formData"] = formData
 				}
-				return ""
-			}(),
-		)
-	}
-}
+			}
 
-// log submits a log entry for processing
-func (l *Logger) log(entry LogEntry) {
-	if l.config.Async {
-		select {
-		case l.entries <- entry:
-			// Successfully enqueued
-		default:
-			// Buffer full, write directly to avoid losing the log
-			l.writeEntry(entry)
-		}
-	} else {
-		l.writeEntry(entry)
-	}
-}
+			// Handle JSON content
+			if strings.HasPrefix(contentType, "application/json") {
+				// Get a buffer from the pool and ensure it's empty
+				buffer := bufferPool.Get().(*bytes.Buffer)
+				buffer.Reset()
+				defer bufferPool.Put(buffer) // Return buffer to the pool when done
 
-// LoggingMiddleware creates a middleware that logs HTTP requests
-func LoggingMiddleware(config *LoggerConfig) MiddlewareFunc {
-	logger := NewLogger(config)
+				// Copy request body to buffer
+				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
+					errs = append(errs, ValidationError{Field: "", Error: "failed to read request body"})
+				} else {
+					// Create a new reader from buffer bytes and replace the request body
+					bodyBytes := buffer.Bytes()
+					ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	// Generate a unique request ID
-	var requestIDCounter uint64
-	var requestIDMutex sync.Mutex
-
-	getRequestID := func() string {
-		requestIDMutex.Lock()
-		defer requestIDMutex.Unlock()
-		requestIDCounter++
-		return fmt.Sprintf("%d-%d", time.Now().UnixNano(), requestIDCounter)
-	}
-
-	return func(c *Context, next func()) {
-		// Skip logging for excluded paths
-		if logger.shouldSkipPath(c.Request.URL.Path) {
-			next()
-			return
-		}
-
-		// Generate request ID and store in context
-		requestID := getRequestID()
-		c.Set("requestID", requestID)
-
-		// Add request ID to response headers
-		c.SetHeader("X-Request-ID", requestID)
-
-		// Collect start time and initial info
-		start := time.Now()
-
-		// Process request
-		next()
-
-		// Get wrapped response writer to access status code and bytes written
-		w, ok := c.Writer.(*TrackedResponseWriter)
-		if !ok {
-			// Fallback if writer is not the expected type
-			logger.log(LogEntry{
-				Time:      start,
-				Level:     INFO,
-				Method:    c.Request.Method,
-				Path:      c.Request.URL.Path,
-				IP:        c.Request.RemoteAddr,
-				Status:    0, // Unknown
-				Latency:   time.Since(start),
-				RequestID: requestID,
-			})
-			return
-		}
-
-		// Determine log level based on status code
-		level := INFO
-		if w.Status() >= 400 && w.Status() < 500 {
-			level = WARN
-		} else if w.Status() >= 500 {
-			level = ERROR
-		}
-
-		// Get error from context if present
-		var err error
-		if errVal := c.Get("error"); errVal != nil {
-			if e, ok := errVal.(error); ok {
-				err = e
+					// Parse JSON only if we successfully read the body
+					var body map[string]interface{}
+					if err := json.Unmarshal(bodyBytes, &body); err == nil {
+						ctx.Values["body"] = body
+					} else {
+						errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
+					}
+				}
 			}
 		}
 
-		// Extract requested headers
-		userAgent := c.Request.Header.Get("User-Agent")
+		// Process validation chains
+		for _, chain := range chains {
+			var value interface{}
+			var found bool
 
-		// Create and submit log entry
-		logger.log(LogEntry{
-			Time:      start,
-			Level:     level,
-			Method:    c.Request.Method,
-			Path:      c.Request.URL.Path,
-			IP:        c.Request.RemoteAddr,
-			Status:    w.Status(),
-			Latency:   time.Since(start),
-			BytesSent: w.BytesWritten(),
-			UserAgent: userAgent,
-			RequestID: requestID,
-			Error:     err,
-		})
+			// Check query parameters first
+			if val := ctx.Request.URL.Query().Get(chain.field); val != "" {
+				value = val
+				found = true
+			} else if val, ok := ctx.GetParam(chain.field); ok {
+				// Then check URL parameters
+				value = val
+				found = true
+			} else if formData, ok := ctx.Values["formData"].(map[string]interface{}); ok {
+				// Check form data
+				if val, ok := formData[chain.field]; ok {
+					value = val
+					found = true
+				}
+			} else if body, ok := ctx.Values["body"].(map[string]interface{}); ok {
+				// Finally check JSON body fields
+				if val, ok := body[chain.field]; ok {
+					value = val
+					found = true
+				}
+			}
+
+			// Apply validation rules if the field was found
+			if found {
+				for _, rule := range chain.rules {
+					// Convert value to string if it's not already a string
+					strValue := ""
+					switch v := value.(type) {
+					case string:
+						strValue = v
+					case float64:
+						strValue = strconv.FormatFloat(v, 'f', -1, 64)
+					case int:
+						strValue = strconv.Itoa(v)
+					case bool:
+						strValue = strconv.FormatBool(v)
+					case []interface{}:
+						// Handle array values (convert to JSON)
+						if jsonBytes, err := json.Marshal(v); err == nil {
+							strValue = string(jsonBytes)
+						}
+					case map[string]interface{}:
+						// Handle object values (convert to JSON)
+						if jsonBytes, err := json.Marshal(v); err == nil {
+							strValue = string(jsonBytes)
+						}
+					default:
+						// For any other type, try to convert to string
+						strValue = fmt.Sprintf("%v", v)
+					}
+
+					if err := rule(strValue); err != nil {
+						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
+						break // Stop on first validation error for this field
+					}
+				}
+			} else {
+				// Field not found in any source - check if it's required
+				for _, rule := range chain.rules {
+					if err := rule(""); err != nil {
+						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
+						break
+					}
+				}
+			}
+		}
+
+		// Store validation errors in context if any
+		if len(errs) > 0 {
+			ctx.ValidationErrs = errs
+		}
+
+		// Continue with the next middleware or handler
+		next()
 	}
 }
 
-// DefaultLoggingMiddleware returns a logging middleware with default configuration
-func DefaultLoggingMiddleware() MiddlewareFunc {
-	return LoggingMiddleware(nil)
+// Helper Types and Functions
+
+// childNode represents a child node in the routing tree.
+type childNode struct {
+	key  string
+	node *node
+}
+
+// node represents a node in the routing tree.
+type node struct {
+	path       string
+	wildcard   bool
+	handler    HandlerFunc
+	children   []childNode
+	middleware []MiddlewareFunc
+}
+
+// insertChild inserts a child node into the sorted list of children.
+func insertChild(children []childNode, key string, node *node) []childNode {
+	idx := sort.Search(len(children), func(i int) bool { return children[i].key >= key })
+	if idx < len(children) && children[idx].key == key {
+		children[idx].node = node
+	} else {
+		newChild := childNode{key: key, node: node}
+		children = append(children, childNode{})
+		copy(children[idx+1:], children[idx:])
+		children[idx] = newChild
+	}
+	return children
+}
+
+// TrackedResponseWriter wraps http.ResponseWriter to track if headers have been sent.
+type TrackedResponseWriter struct {
+	http.ResponseWriter
+	statusCode    int
+	headerWritten bool
+	bytesWritten  int64
+}
+
+// WrapResponseWriter creates a new TrackedResponseWriter.
+func WrapResponseWriter(w http.ResponseWriter) *TrackedResponseWriter {
+	return &TrackedResponseWriter{
+		ResponseWriter: w,
+		statusCode:     http.StatusOK,
+	}
+}
+
+// WriteHeader records that headers have been written.
+func (w *TrackedResponseWriter) WriteHeader(statusCode int) {
+	if !w.headerWritten {
+		w.statusCode = statusCode
+		w.ResponseWriter.WriteHeader(statusCode)
+		w.headerWritten = true
+	}
+}
+
+// Write records that data (and implicitly headers) have been written.
+func (w *TrackedResponseWriter) Write(b []byte) (int, error) {
+	if !w.headerWritten {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytesWritten += int64(n)
+	return n, err
+}
+
+// Status returns the HTTP status code that was set.
+func (w *TrackedResponseWriter) Status() int {
+	return w.statusCode
+}
+
+// Written returns whether headers have been sent.
+func (w *TrackedResponseWriter) Written() bool {
+	return w.headerWritten
+}
+
+// BytesWritten returns the number of bytes written.
+func (w *TrackedResponseWriter) BytesWritten() int64 {
+	return w.bytesWritten
+}
+
+// Unwrap returns the original ResponseWriter.
+func (w *TrackedResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// Flush implements http.Flusher interface if the underlying writer supports it.
+func (w *TrackedResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Hijack implements http.Hijacker interface if the underlying writer supports it.
+func (w *TrackedResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hijacker, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+}
+
+// Push implements http.Pusher interface if the underlying writer supports it.
+func (w *TrackedResponseWriter) Push(target string, opts *http.PushOptions) error {
+	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
+		return pusher.Push(target, opts)
+	}
+	return fmt.Errorf("underlying ResponseWriter does not implement http.Pusher")
+}
+
+// Buffer Pool for ValidationMiddleware
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
 }
