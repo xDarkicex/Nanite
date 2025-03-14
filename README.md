@@ -20,7 +20,7 @@ Nanite is a lightweight, high-performance HTTP router for Go. It's designed to b
 ## Installation
 
 ```bash
-go get github.com/example/nanite
+go get github.com/xDarkicex/Nanite
 ```
 
 ## Quick Start
