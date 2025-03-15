@@ -716,7 +716,7 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 				strings.HasPrefix(contentType, "multipart/form-data") {
 
 				if err := ctx.Request.ParseForm(); err != nil {
-					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Error: "failed to parse form data"})
+					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Err: "failed to parse form data"})
 					return
 				}
 				// Store form data in ctx.Values
@@ -738,7 +738,7 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 				defer bufferPool.Put(buffer)
 
 				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
-					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Error: "failed to read request body"})
+					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Err: "failed to read request body"})
 					return
 				}
 				bodyBytes := buffer.Bytes()
@@ -747,7 +747,7 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 
 				var body map[string]interface{}
 				if err := json.Unmarshal(bodyBytes, &body); err != nil {
-					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Error: "invalid JSON"})
+					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Err: "invalid JSON"})
 					return
 				}
 				ctx.Values["body"] = body
