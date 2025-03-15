@@ -93,6 +93,9 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 
 		// Proceed to the next middleware or handler
 		next()
+		for _, chain := range chains {
+			chain.Release()
+		}
 	}
 }
 

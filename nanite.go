@@ -4,7 +4,6 @@
 package nanite
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -502,11 +501,4 @@ func insertChild(children []childNode, key string, node *node) []childNode {
 		children[idx] = newChild
 	}
 	return children
-}
-
-// Buffer Pool for ValidationMiddleware
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
 }

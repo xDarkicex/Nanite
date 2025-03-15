@@ -3,7 +3,6 @@ package nanite
 
 import (
 	"fmt"
-	"sync"
 )
 
 // LazyField represents a field that will be validated lazily
@@ -117,37 +116,4 @@ func (c *Context) ClearLazyFields() {
 		putLazyField(field)
 		delete(c.lazyFields, k)
 	}
-}
-
-// ### Lazy field pool
-
-// lazyFieldpool pool for lazy fields data
-var lazyFieldPool = sync.Pool{
-	New: func() interface{} {
-		return &LazyField{
-			rules: make([]ValidatorFunc, 0, 5),
-		}
-	},
-}
-
-// getLazyField retrieves a LazyField from the pool
-func getLazyField(name string, getValue func() string) *LazyField {
-	lf := lazyFieldPool.Get().(*LazyField)
-	lf.name = name
-	lf.getValue = getValue
-	lf.validated = false
-	lf.value = ""
-	lf.err = nil
-	return lf
-}
-
-// putLazyField returns a LazyField to the pool
-func putLazyField(lf *LazyField) {
-	lf.name = ""
-	lf.getValue = nil
-	lf.rules = lf.rules[:0]
-	lf.validated = false
-	lf.value = ""
-	lf.err = nil
-	lazyFieldPool.Put(lf)
 }

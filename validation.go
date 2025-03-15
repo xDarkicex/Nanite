@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // ValidationError represents a single validation error with field and message.
@@ -17,29 +16,6 @@ type ValidationError struct {
 // Error implements the error interface.
 func (ve *ValidationError) Error() string {
 	return fmt.Sprintf("%s: %s", ve.Field, ve.Err)
-}
-
-// Object pool for ValidationError
-var validationErrorPool = sync.Pool{
-	New: func() interface{} {
-		return &ValidationError{}
-	},
-}
-
-// getValidationError retrieves a ValidationError from the pool
-func getValidationError(field, errorMsg string) *ValidationError {
-	ve := validationErrorPool.Get().(*ValidationError)
-	ve.Field = field
-	ve.Err = errorMsg
-	return ve
-}
-
-// putValidationError returns a ValidationError to the pool
-func putValidationError(ve *ValidationError) {
-	// Clear the fields to prevent memory leaks
-	ve.Field = ""
-	ve.Err = ""
-	validationErrorPool.Put(ve)
 }
 
 // ValidatorFunc defines the signature for validation functions.
@@ -258,24 +234,10 @@ func (vc *ValidationChain) Required() *ValidationChain {
 
 // NewValidationChain creates a new ValidationChain for the specified field.
 func NewValidationChain(field string) *ValidationChain {
-	return &ValidationChain{
-		field: field,
-		rules: make([]ValidatorFunc, 0, 5), // Pre-allocate for efficiency
-	}
+	return getValidationChain(field)
 }
 
-var validationErrorsPool = sync.Pool{
-	New: func() interface{} {
-		return make(ValidationErrors, 0, 8)
-	},
-}
-
-func getValidationErrors() ValidationErrors {
-	return validationErrorsPool.Get().(ValidationErrors)[:0]
-}
-
-func putValidationErrors(ve ValidationErrors) {
-	if cap(ve) > 0 {
-		validationErrorsPool.Put(ve[:0])
-	}
+// Add a Release method to ValidationChain to return it to the pool
+func (vc *ValidationChain) Release() {
+	putValidationChain(vc)
 }
