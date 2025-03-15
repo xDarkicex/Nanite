@@ -1,7 +1,10 @@
 // lazy_validation.go
 package nanite
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // LazyField represents a field that will be validated lazily
 type LazyField struct {
@@ -21,24 +24,9 @@ func (lf *LazyField) Value() (string, error) {
 
 		for _, rule := range lf.rules {
 			if err := rule(rawValue); err != nil {
-				// Use the pool to get a validation error
-				if ve, ok := err.(*ValidationError); ok {
-					// Store a copy of the error, not the pooled object
-					lf.err = &ValidationError{
-						Field: ve.Field,
-						Err:   ve.Err,
-					}
-					// Return the pooled object
-					putValidationError(ve)
-				} else {
-					// If it's not a ValidationError, create one
-					ve := getValidationError(lf.name, err.Error())
-					lf.err = &ValidationError{
-						Field: ve.Field,
-						Err:   ve.Err,
-					}
-					putValidationError(ve)
-				}
+				// Store the error directly - no need to create a copy
+				// since we're storing it in lf.err for the lifetime of the LazyField
+				lf.err = err
 				break
 			}
 		}
@@ -58,34 +46,31 @@ func (c *Context) Field(name string) *LazyField {
 
 	field, exists := c.lazyFields[name]
 	if !exists {
-		field = &LazyField{
-			name: name,
-			getValue: func() string {
-				// Try fetching from query, params, form, or body
-				if val := c.Request.URL.Query().Get(name); val != "" {
-					return val
-				}
+		// Use the pool instead of direct allocation
+		field = getLazyField(name, func() string {
+			// Try fetching from query, params, form, or body
+			if val := c.Request.URL.Query().Get(name); val != "" {
+				return val
+			}
 
-				if val, ok := c.GetParam(name); ok {
-					return val
-				}
+			if val, ok := c.GetParam(name); ok {
+				return val
+			}
 
-				if formData, ok := c.Values["formData"].(map[string]interface{}); ok {
-					if val, ok := formData[name]; ok {
-						return fmt.Sprintf("%v", val)
-					}
+			if formData, ok := c.Values["formData"].(map[string]interface{}); ok {
+				if val, ok := formData[name]; ok {
+					return fmt.Sprintf("%v", val)
 				}
+			}
 
-				if body, ok := c.Values["body"].(map[string]interface{}); ok {
-					if val, ok := body[name]; ok {
-						return fmt.Sprintf("%v", val)
-					}
+			if body, ok := c.Values["body"].(map[string]interface{}); ok {
+				if val, ok := body[name]; ok {
+					return fmt.Sprintf("%v", val)
 				}
+			}
 
-				return ""
-			},
-			rules: []ValidatorFunc{},
-		}
+			return ""
+		})
 
 		c.lazyFields[name] = field
 	}
@@ -93,7 +78,7 @@ func (c *Context) Field(name string) *LazyField {
 	return field
 }
 
-// ValidateAllFields validates all lazy fields and collects errors
+// In lazy_validation.go, update ValidateAllFields
 func (c *Context) ValidateAllFields() bool {
 	if len(c.lazyFields) == 0 {
 		return true
@@ -105,20 +90,18 @@ func (c *Context) ValidateAllFields() bool {
 		_, err := field.Value()
 		if err != nil {
 			if c.ValidationErrs == nil {
-				c.ValidationErrs = make(ValidationErrors, 0, len(c.lazyFields))
+				c.ValidationErrs = getValidationErrors()
 			}
 
-			// Add the validation error to the context
+			// Add the validation error to the context using the pool
 			if ve, ok := err.(*ValidationError); ok {
-				c.ValidationErrs = append(c.ValidationErrs, ValidationError{
-					Field: name,
-					Err:   ve.Err,
-				})
+				newErr := getValidationError(name, ve.Err)
+				c.ValidationErrs = append(c.ValidationErrs, *newErr)
+				putValidationError(newErr)
 			} else {
-				c.ValidationErrs = append(c.ValidationErrs, ValidationError{
-					Field: name,
-					Err:   err.Error(),
-				})
+				newErr := getValidationError(name, err.Error())
+				c.ValidationErrs = append(c.ValidationErrs, *newErr)
+				putValidationError(newErr)
 			}
 
 			hasErrors = true
@@ -133,4 +116,37 @@ func (c *Context) ClearLazyFields() {
 	for k := range c.lazyFields {
 		delete(c.lazyFields, k)
 	}
+}
+
+// ### Lazy field pool
+
+// lazyFieldpool pool for lazy fields data
+var lazyFieldPool = sync.Pool{
+	New: func() interface{} {
+		return &LazyField{
+			rules: make([]ValidatorFunc, 0, 5),
+		}
+	},
+}
+
+// getLazyField retrieves a LazyField from the pool
+func getLazyField(name string, getValue func() string) *LazyField {
+	lf := lazyFieldPool.Get().(*LazyField)
+	lf.name = name
+	lf.getValue = getValue
+	lf.validated = false
+	lf.value = ""
+	lf.err = nil
+	return lf
+}
+
+// putLazyField returns a LazyField to the pool
+func putLazyField(lf *LazyField) {
+	lf.name = ""
+	lf.getValue = nil
+	lf.rules = lf.rules[:0]
+	lf.validated = false
+	lf.value = ""
+	lf.err = nil
+	lazyFieldPool.Put(lf)
 }

@@ -2,7 +2,6 @@ package nanite
 
 import (
 	"fmt"
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -265,11 +264,18 @@ func NewValidationChain(field string) *ValidationChain {
 	}
 }
 
-// CheckValidation checks if there are validation errors and sends a response if present.
-func (c *Context) CheckValidation() bool {
-	if len(c.ValidationErrs) > 0 {
-		c.JSON(http.StatusBadRequest, map[string]interface{}{"errors": c.ValidationErrs})
-		return false
+var validationErrorsPool = sync.Pool{
+	New: func() interface{} {
+		return make(ValidationErrors, 0, 8)
+	},
+}
+
+func getValidationErrors() ValidationErrors {
+	return validationErrorsPool.Get().(ValidationErrors)[:0]
+}
+
+func putValidationErrors(ve ValidationErrors) {
+	if cap(ve) > 0 {
+		validationErrorsPool.Put(ve[:0])
 	}
-	return true
 }

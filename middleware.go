@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net/http"
 	"strings"
 )
 
@@ -24,11 +25,17 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 			// Parse form data (application/x-www-form-urlencoded or multipart/form-data)
 			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
 				strings.HasPrefix(contentType, "multipart/form-data") {
-
 				if err := ctx.Request.ParseForm(); err != nil {
-					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Err: "failed to parse form data"})
+					ve := getValidationError("", "failed to parse form data")
+					if ctx.ValidationErrs == nil {
+						ctx.ValidationErrs = make(ValidationErrors, 0, 1)
+					}
+					ctx.ValidationErrs = append(ctx.ValidationErrs, *ve)
+					putValidationError(ve)
+					ctx.JSON(http.StatusBadRequest, map[string]interface{}{"errors": ctx.ValidationErrs})
 					return
 				}
+
 				// Store form data in ctx.Values
 				formData := make(map[string]interface{})
 				for key, values := range ctx.Request.Form {
@@ -48,18 +55,32 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 				defer bufferPool.Put(buffer)
 
 				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
-					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Err: "failed to read request body"})
+					ve := getValidationError("", "failed to read request body")
+					if ctx.ValidationErrs == nil {
+						ctx.ValidationErrs = make(ValidationErrors, 0, 1)
+					}
+					ctx.ValidationErrs = append(ctx.ValidationErrs, *ve)
+					putValidationError(ve)
+					ctx.JSON(http.StatusBadRequest, map[string]interface{}{"errors": ctx.ValidationErrs})
 					return
 				}
+
 				bodyBytes := buffer.Bytes()
 				// Restore request body for downstream use
 				ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 				var body map[string]interface{}
 				if err := json.Unmarshal(bodyBytes, &body); err != nil {
-					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Err: "invalid JSON"})
+					ve := getValidationError("", "invalid JSON")
+					if ctx.ValidationErrs == nil {
+						ctx.ValidationErrs = make(ValidationErrors, 0, 1)
+					}
+					ctx.ValidationErrs = append(ctx.ValidationErrs, *ve)
+					putValidationError(ve)
+					ctx.JSON(http.StatusBadRequest, map[string]interface{}{"errors": ctx.ValidationErrs})
 					return
 				}
+
 				ctx.Values["body"] = body
 			}
 		}
