@@ -13,15 +13,21 @@ type LazyField struct {
 
 func (lf *LazyField) Value() (string, error) {
 	if !lf.validated {
-		rawValue := lf.getValue() // Fetch the raw value
+		rawValue := lf.getValue()
 		lf.value = rawValue
 		for _, rule := range lf.rules {
 			if err := rule(rawValue); err != nil {
-				lf.err = fmt.Errorf("%s: %w", lf.name, err)
+				ve := getValidationError(lf.name, err.Error())
+				lf.err = ve
 				break
 			}
 		}
 		lf.validated = true
+	}
+	if lf.err != nil {
+		if ve, ok := lf.err.(*ValidationError); ok {
+			defer putValidationError(ve)
+		}
 	}
 	return lf.value, lf.err
 }
@@ -36,7 +42,24 @@ func (c *Context) Field(name string) *LazyField {
 		field = &LazyField{
 			name: name,
 			getValue: func() string {
-				return c.Request.FormValue(name) // Example: fetch from form data
+				// Try fetching from query, params, form, or body
+				if val := c.Request.URL.Query().Get(name); val != "" {
+					return val
+				}
+				if val, ok := c.GetParam(name); ok {
+					return val
+				}
+				if formData, ok := c.Values["formData"].(map[string]interface{}); ok {
+					if val, ok := formData[name]; ok {
+						return fmt.Sprintf("%v", val)
+					}
+				}
+				if body, ok := c.Values["body"].(map[string]interface{}); ok {
+					if val, ok := body[name]; ok {
+						return fmt.Sprintf("%v", val)
+					}
+				}
+				return ""
 			},
 		}
 		c.lazyFields[name] = field
