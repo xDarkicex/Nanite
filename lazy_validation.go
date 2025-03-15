@@ -3,6 +3,7 @@ package nanite
 
 import (
 	"fmt"
+	"slices"
 )
 
 // LazyField represents a field that will be validated lazily
@@ -91,6 +92,7 @@ func (c *Context) ValidateAllFields() bool {
 		if err != nil {
 			if c.ValidationErrs == nil {
 				c.ValidationErrs = getValidationErrors()
+				c.ValidationErrs = slices.Grow(c.ValidationErrs, len(c.lazyFields))
 			}
 
 			// More efficient approach - directly add to the slice

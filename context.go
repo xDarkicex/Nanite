@@ -147,9 +147,7 @@ func (c *Context) IsAborted() bool {
 
 // ClearValues efficiently clears the Values map without reallocating.
 func (c *Context) ClearValues() {
-	for k := range c.Values {
-		delete(c.Values, k)
-	}
+	clear(c.Values)
 }
 
 // CheckValidation validates all lazy fields and returns true if validation passed

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -249,7 +250,7 @@ func (r *Router) ServeStatic(prefix, root string) {
 
 // parsePath splits a path into segments for routing.
 func parsePath(path string) []string {
-	if path == "/" {
+	if path == "/" || path == "" {
 		return []string{}
 	}
 
@@ -258,15 +259,15 @@ func parsePath(path string) []string {
 		return []string{}
 	}
 
-	parts := make([]string, 0, 10) // Most paths have < 10 segments
-	start := 0
-	for i := 0; i < len(path); i++ {
-		if path[i] == '/' {
-			parts = append(parts, path[start:i])
-			start = i + 1
+	parts := make([]string, 0, 10)
+	for path != "" {
+		var part string
+		part, path, _ = strings.Cut(path, "/")
+		if part != "" {
+			parts = append(parts, part)
 		}
 	}
-	parts = append(parts, path[start:])
+
 	return parts
 }
 
@@ -330,10 +331,12 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []Param) {
 	r.mutex.RLock() // Use read lock only
 	defer r.mutex.RUnlock()
+
 	if tree, exists := r.trees[method]; exists {
 		cur := tree
 		var params []Param
 		parts := parsePath(path)
+
 		for i, part := range parts {
 			if cur.wildcard {
 				// Capture remaining path as wildcard parameter
@@ -341,16 +344,26 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 				if cur.paramName != "" {
 					params = append(params, Param{Key: cur.paramName, Value: remainingPath})
 				}
+
 				if cur.handler != nil {
 					return cur.handler, params
 				}
+
 				return nil, nil
 			}
-			idx := sort.Search(len(cur.children), func(j int) bool { return cur.children[j].key >= part })
+
+			// Use cmp.Compare for more efficient comparison
+			idx := sort.Search(len(cur.children), func(j int) bool {
+				return cur.children[j].key >= part
+			})
+
 			if idx < len(cur.children) && cur.children[idx].key == part {
 				cur = cur.children[idx].node
 			} else {
-				idx = sort.Search(len(cur.children), func(j int) bool { return cur.children[j].key >= ":" })
+				idx = sort.Search(len(cur.children), func(j int) bool {
+					return cur.children[j].key >= ":"
+				})
+
 				if idx < len(cur.children) && cur.children[idx].key == ":" {
 					cur = cur.children[idx].node
 					if cur.paramName != "" {
@@ -361,10 +374,12 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 				}
 			}
 		}
+
 		if cur.handler != nil {
 			return cur.handler, params
 		}
 	}
+
 	return nil, nil
 }
 
@@ -450,8 +465,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}()
 	// Execute the handler with middleware
 	r.mutex.RLock()
-	allMiddleware := make([]MiddlewareFunc, len(r.middleware))
-	copy(allMiddleware, r.middleware)
+	allMiddleware := slices.Clone(r.middleware)
 	r.mutex.RUnlock()
 
 	executeMiddlewareChain(ctx, handler, allMiddleware)
@@ -475,12 +489,11 @@ type childNode struct {
 
 // node represents a node in the routing tree.
 type node struct {
-	path       string
-	paramName  string
-	wildcard   bool
-	handler    HandlerFunc
-	children   []childNode
-	middleware []MiddlewareFunc
+	path      string
+	paramName string
+	wildcard  bool
+	handler   HandlerFunc
+	children  []childNode
 }
 
 // insertChild inserts a child node into the sorted list of children.
@@ -490,9 +503,7 @@ func insertChild(children []childNode, key string, node *node) []childNode {
 		children[idx].node = node
 	} else {
 		newChild := childNode{key: key, node: node}
-		children = append(children, childNode{})
-		copy(children[idx+1:], children[idx:])
-		children[idx] = newChild
+		children = slices.Insert(children, idx, newChild)
 	}
 	return children
 }
