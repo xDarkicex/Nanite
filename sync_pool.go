@@ -1,3 +1,5 @@
+// Package nanite provides sync.Pool implementations for various objects
+// to reduce memory allocations and improve performance under high load.
 package nanite
 
 import (

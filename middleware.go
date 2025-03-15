@@ -37,7 +37,7 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 				}
 
 				// Store form data in ctx.Values
-				formData := make(map[string]interface{})
+				formData := getMap()
 				for key, values := range ctx.Request.Form {
 					if len(values) == 1 {
 						formData[key] = values[0]
