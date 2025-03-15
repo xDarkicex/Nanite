@@ -263,6 +263,7 @@ func (r *Router) ServeStatic(prefix, root string) {
 // ### Helper Functions
 
 // parsePath splits a path into segments for routing.
+// depricated
 func parsePath(path string) []string {
 	if path == "/" || path == "" {
 		return []string{}
@@ -320,73 +321,99 @@ func parsePath(path string) []string {
 func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
+
 	if _, exists := r.trees[method]; !exists {
 		r.trees[method] = &node{children: []childNode{}}
 	}
+
 	cur := r.trees[method]
-	parts := parsePath(path)
-	for _, part := range parts {
+	parser := NewPathParser(path)
+
+	for i := 0; i < parser.Count(); i++ {
 		var key string
-		if strings.HasPrefix(part, ":") {
+
+		if parser.IsParam(i) {
 			key = ":"
-			cur.paramName = part[1:] // Store parameter name without ':'
-		} else if strings.HasPrefix(part, "*") {
+			cur.paramName = parser.ParamName(i)
+		} else if parser.IsWildcard(i) {
 			cur.wildcard = true
-			if len(part) > 1 {
-				cur.paramName = part[1:] // Store wildcard parameter name (e.g., "path")
-			} else {
-				cur.paramName = "*" // Default to "*" if unnamed
+			cur.paramName = parser.ParamName(i)
+			if cur.paramName == "" {
+				cur.paramName = "*"
 			}
 			break // Wildcard ends the path
 		} else {
-			key = part
+			key = parser.Part(i)
 		}
-		idx := sort.Search(len(cur.children), func(i int) bool { return cur.children[i].key >= key })
+
+		// Find or create child node
+		idx := sort.Search(len(cur.children), func(j int) bool {
+			return cur.children[j].key >= key
+		})
+
 		if idx < len(cur.children) && cur.children[idx].key == key {
 			cur = cur.children[idx].node
 		} else {
-			newNode := &node{path: part, children: []childNode{}}
-			if strings.HasPrefix(part, ":") {
-				newNode.paramName = part[1:]
+			newNode := &node{
+				path:     parser.Part(i),
+				children: []childNode{},
 			}
-			cur.children = insertChild(cur.children, key, newNode)
+
+			if parser.IsParam(i) {
+				newNode.paramName = parser.ParamName(i)
+			}
+
+			cur.children = slices.Insert(cur.children, idx, childNode{key: key, node: newNode})
 			cur = newNode
 		}
 	}
+
 	// Combine global and route-specific middleware and pre-build the chain
 	allMiddleware := append(r.middleware, middleware...)
 	wrapped := handler
+
 	for i := len(allMiddleware) - 1; i >= 0; i-- {
 		mw := allMiddleware[i]
 		next := wrapped
 		wrapped = func(c *Context) {
 			if !c.IsAborted() {
 				mw(c, func() {
-					if !c.IsAborted() { // Add check here
+					if !c.IsAborted() {
 						next(c)
 					}
 				})
 			}
 		}
 	}
+
 	cur.handler = wrapped
 }
 
 // findHandlerAndMiddleware finds the handler and parameters for a given method and path.
 func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []Param) {
-	r.mutex.RLock() // Use read lock only
+	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
 	if tree, exists := r.trees[method]; exists {
 		cur := tree
 		var params []Param
-		parts := parsePath(path)
+		parser := NewPathParser(path)
 
-		for i, part := range parts {
+		for i := 0; i < parser.Count(); i++ {
+			part := parser.Part(i)
+
 			if cur.wildcard {
 				// Capture remaining path as wildcard parameter
-				remainingPath := strings.Join(parts[i:], "/")
 				if cur.paramName != "" {
+					// Calculate remaining path without allocating new strings
+					var remainingPath string
+					if i < parser.Count() {
+						// Get the start of the current part
+						startIdx := parser.parts[i].Start
+						// Use the original path from this point
+						remainingPath = path[startIdx:]
+					}
+
 					params = append(params, Param{Key: cur.paramName, Value: remainingPath})
 				}
 
@@ -397,7 +424,7 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 				return nil, nil
 			}
 
-			// Use cmp.Compare for more efficient comparison
+			// Find exact match
 			idx := sort.Search(len(cur.children), func(j int) bool {
 				return cur.children[j].key >= part
 			})
@@ -405,6 +432,7 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 			if idx < len(cur.children) && cur.children[idx].key == part {
 				cur = cur.children[idx].node
 			} else {
+				// Try parameter match
 				idx = sort.Search(len(cur.children), func(j int) bool {
 					return cur.children[j].key >= ":"
 				})
