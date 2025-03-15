@@ -189,7 +189,7 @@ func putLazyField(lf *LazyField) {
 var validationChainPool = sync.Pool{
 	New: func() interface{} {
 		return &ValidationChain{
-			rules: make([]ValidatorFunc, 0, 5), // Pre-allocate for efficiency
+			rules: make([]ValidatorFunc, 0, 10), // Pre-allocate for efficiency
 		}
 	},
 }

@@ -7,6 +7,13 @@ import (
 	"strings"
 )
 
+var (
+	errRequired      = "field is required"
+	errInvalidFormat = "invalid format"
+	errMustBeNumber  = "must be a number"
+	errMustBeBoolean = "must be a boolean value"
+)
+
 // ValidationError represents a single validation error with field and message.
 type ValidationError struct {
 	Field string `json:"field"` // Field name that failed validation
@@ -103,7 +110,7 @@ func (vc *ValidationChain) Matches(pattern string) *ValidationChain {
 			return nil
 		}
 		if !re.MatchString(value) {
-			return getValidationError(vc.field, "invalid format")
+			return getValidationError(vc.field, errInvalidFormat)
 		}
 		return nil
 	})
@@ -111,18 +118,22 @@ func (vc *ValidationChain) Matches(pattern string) *ValidationChain {
 }
 
 // Length adds a rule that the field must have a length within the specified range.
-func (vc *ValidationChain) Length(min, max int) *ValidationChain {
+func (vc *ValidationChain) Length(min, maxLength int) *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
 			return nil
 		}
+
 		length := len(value)
 		if length < min {
 			return getValidationError(vc.field, fmt.Sprintf("must be at least %d characters", min))
 		}
-		if length > max {
-			return getValidationError(vc.field, fmt.Sprintf("must be at most %d characters", max))
+
+		// Use max() to avoid unnecessary comparisons
+		if excess := max(0, length-maxLength); excess > 0 {
+			return getValidationError(vc.field, fmt.Sprintf("must be at most %d characters", maxLength))
 		}
+
 		return nil
 	})
 	return vc
@@ -136,7 +147,7 @@ func (vc *ValidationChain) Max(max int) *ValidationChain {
 		}
 		num, err := strconv.Atoi(value)
 		if err != nil {
-			return getValidationError(vc.field, "must be a number")
+			return getValidationError(vc.field, errMustBeNumber)
 		}
 		if num > max {
 			return getValidationError(vc.field, fmt.Sprintf("must be at most %d", max))
@@ -154,7 +165,7 @@ func (vc *ValidationChain) Min(min int) *ValidationChain {
 		}
 		num, err := strconv.Atoi(value)
 		if err != nil {
-			return getValidationError(vc.field, "must be a number")
+			return getValidationError(vc.field, errMustBeNumber)
 		}
 		if num < min {
 			return getValidationError(vc.field, fmt.Sprintf("must be at least %d", min))
@@ -172,7 +183,7 @@ func (vc *ValidationChain) IsBoolean() *ValidationChain {
 		}
 		lowerVal := strings.ToLower(value)
 		if lowerVal != "true" && lowerVal != "false" && lowerVal != "1" && lowerVal != "0" {
-			return getValidationError(vc.field, "must be a boolean value")
+			return getValidationError(vc.field, errMustBeBoolean)
 		}
 		return nil
 	})
@@ -186,7 +197,7 @@ func (vc *ValidationChain) IsFloat() *ValidationChain {
 			return nil
 		}
 		if _, err := strconv.ParseFloat(value, 64); err != nil {
-			return getValidationError(vc.field, "must be a number")
+			return getValidationError(vc.field, errMustBeNumber)
 		}
 		return nil
 	})
@@ -225,7 +236,7 @@ func (vc *ValidationChain) IsEmail() *ValidationChain {
 func (vc *ValidationChain) Required() *ValidationChain {
 	vc.rules = append(vc.rules, func(value string) error {
 		if value == "" {
-			return getValidationError(vc.field, "field is required")
+			return getValidationError(vc.field, errRequired)
 		}
 		return nil
 	})
