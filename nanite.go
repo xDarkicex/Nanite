@@ -1,6 +1,6 @@
 // Package nanite provides a lightweight, high-performance HTTP router for Go.
 // It is designed to be developer-friendly, inspired by Express.js, and optimized
-// for speed and efficiency in routing, middleware handling, and WebSocket support.
+// for speed and efficiency in routing, grouping, middleware handling, and WebSocket support.
 package nanite
 
 import (
