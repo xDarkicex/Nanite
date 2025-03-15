@@ -254,38 +254,49 @@ func parsePath(path string) []string {
 		return []string{}
 	}
 
-	path = strings.Trim(path, "/")
-	if path == "" {
-		return []string{}
-	}
-
-	// Use a fixed array for common case (most URLs have < 8 segments)
-	var partsArray [8]string
+	// Pre-allocate with larger capacity for common case
+	var partsArray [12]string
 	count := 0
 
-	for path != "" {
-		var part string
-		part, path, _ = strings.Cut(path, "/")
-		if part != "" {
-			if count < len(partsArray) {
-				partsArray[count] = part
-				count++
-			} else {
-				// Rare case: more than 8 segments
-				result := make([]string, count, count+8)
-				copy(result, partsArray[:count])
-				result = append(result, part)
+	start := 0
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			if i > start {
+				if count < len(partsArray) {
+					partsArray[count] = path[start:i]
+					count++
+				} else {
+					// Rare case: more than 12 segments
+					result := make([]string, count, count+8)
+					copy(result, partsArray[:count])
+					result = append(result, path[start:i])
 
-				// Handle remaining parts
-				for path != "" {
-					part, path, _ = strings.Cut(path, "/")
-					if part != "" {
-						result = append(result, part)
+					// Handle remaining parts
+					for j := i + 1; j < len(path); j++ {
+						if path[j] == '/' {
+							if j > i+1 {
+								result = append(result, path[i+1:j])
+							}
+							i = j
+						}
 					}
+
+					// Add final part if exists
+					if i+1 < len(path) {
+						result = append(result, path[i+1:])
+					}
+
+					return result
 				}
-				return result
 			}
+			start = i + 1
 		}
+	}
+
+	// Add final part if exists
+	if start < len(path) {
+		partsArray[count] = path[start:]
+		count++
 	}
 
 	return partsArray[:count]
