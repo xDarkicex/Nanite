@@ -259,16 +259,36 @@ func parsePath(path string) []string {
 		return []string{}
 	}
 
-	parts := make([]string, 0, 10)
+	// Use a fixed array for common case (most URLs have < 8 segments)
+	var partsArray [8]string
+	count := 0
+
 	for path != "" {
 		var part string
 		part, path, _ = strings.Cut(path, "/")
 		if part != "" {
-			parts = append(parts, part)
+			if count < len(partsArray) {
+				partsArray[count] = part
+				count++
+			} else {
+				// Rare case: more than 8 segments
+				result := make([]string, count, count+8)
+				copy(result, partsArray[:count])
+				result = append(result, part)
+
+				// Handle remaining parts
+				for path != "" {
+					part, path, _ = strings.Cut(path, "/")
+					if part != "" {
+						result = append(result, part)
+					}
+				}
+				return result
+			}
 		}
 	}
 
-	return parts
+	return partsArray[:count]
 }
 
 // addRoute adds a route to the router's tree for the given method and path.
