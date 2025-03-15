@@ -97,15 +97,13 @@ func (c *Context) ValidateAllFields() bool {
 
 			// More efficient approach - directly add to the slice
 			if ve, ok := err.(*ValidationError); ok {
-				c.ValidationErrs = append(c.ValidationErrs, ValidationError{
-					Field: name,
-					Err:   ve.Err,
-				})
+				pooledErr := getValidationError(name, ve.Err)
+				c.ValidationErrs = append(c.ValidationErrs, *pooledErr)
+				putValidationError(pooledErr)
 			} else {
-				c.ValidationErrs = append(c.ValidationErrs, ValidationError{
-					Field: name,
-					Err:   err.Error(),
-				})
+				pooledErr := getValidationError(name, err.Error())
+				c.ValidationErrs = append(c.ValidationErrs, *pooledErr)
+				putValidationError(pooledErr)
 			}
 
 			hasErrors = true

@@ -6,6 +6,7 @@ package nanite
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"sort"
@@ -60,7 +61,7 @@ func (ve ValidationErrors) Error() string {
 	}
 	var errs []string
 	for _, e := range ve {
-		errs = append(errs, fmt.Sprintf("%s: %s", e.Field, e.Error))
+		errs = append(errs, fmt.Sprintf("%s: %s", e.Field, e.Error()))
 	}
 	return fmt.Sprintf("validation failed: %s", strings.Join(errs, ", "))
 }
@@ -109,16 +110,20 @@ func New() *Router {
 				WriteTimeout:   10 * time.Second,
 				PingInterval:   30 * time.Second,
 				MaxMessageSize: 1024 * 1024, // 1MB
-				BufferSize:     1024,
+				BufferSize:     4096,
 			},
 		},
 		httpClient: &http.Client{
 			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 20,
+				MaxIdleConns:        1000,
+				MaxIdleConnsPerHost: 100,
 				IdleConnTimeout:     120 * time.Second,
 				DisableCompression:  false,
 				ForceAttemptHTTP2:   false,
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
 			},
 			Timeout: 30 * time.Second,
 		},
@@ -205,6 +210,15 @@ func (r *Router) Start(port string) error {
 		WriteTimeout:   5 * time.Second,
 		IdleTimeout:    60 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1MB
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			if state == http.StateNew {
+				tcpConn, ok := conn.(*net.TCPConn)
+				if ok {
+					tcpConn.SetReadBuffer(65536)
+					tcpConn.SetWriteBuffer(65536)
+				}
+			}
+		},
 	}
 	fmt.Printf("Nanite server running on port %s\n", port)
 	return server.ListenAndServe()
