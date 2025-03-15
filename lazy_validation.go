@@ -113,7 +113,8 @@ func (c *Context) ValidateAllFields() bool {
 
 // ClearLazyFields efficiently clears the LazyFields map without reallocating.
 func (c *Context) ClearLazyFields() {
-	for k := range c.lazyFields {
+	for k, field := range c.lazyFields {
+		putLazyField(field)
 		delete(c.lazyFields, k)
 	}
 }
