@@ -76,9 +76,16 @@ func (c *Context) File(key string) (*multipart.FileHeader, error) {
 func (c *Context) JSON(status int, data interface{}) {
 	c.Writer.Header().Set("Content-Type", "application/json")
 	c.Writer.WriteHeader(status)
-	if err := json.NewEncoder(c.Writer).Encode(data); err != nil {
+
+	pair := getJSONEncoder()
+	defer putJSONEncoder(pair)
+
+	if err := pair.encoder.Encode(data); err != nil {
 		http.Error(c.Writer, "Failed to encode JSON", http.StatusInternalServerError)
+		return
 	}
+
+	c.Writer.Write(pair.buffer.Bytes())
 }
 
 // String sends a plain text response with the specified status code.

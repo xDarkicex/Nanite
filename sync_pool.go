@@ -4,6 +4,7 @@ package nanite
 
 import (
 	"bytes"
+	"encoding/json"
 	"sync"
 )
 
@@ -261,4 +262,39 @@ func cleanupNestedMaps(value interface{}) {
 			}
 		}
 	}
+}
+
+//------------------------------------------------------------------------------
+// JSON Encoder Pool
+//------------------------------------------------------------------------------
+
+// jsonEncoderBufferPair holds a reusable encoder and buffer pair
+type jsonEncoderBufferPair struct {
+	encoder *json.Encoder
+	buffer  *bytes.Buffer
+}
+
+// jsonEncoderPool is a pool of reusable json.Encoder and buffer pairs
+var jsonEncoderPool = sync.Pool{
+	New: func() interface{} {
+		buffer := new(bytes.Buffer)
+		return &jsonEncoderBufferPair{
+			encoder: json.NewEncoder(buffer),
+			buffer:  buffer,
+		}
+	},
+}
+
+// getJSONEncoder retrieves an encoder/buffer pair from the pool
+func getJSONEncoder() *jsonEncoderBufferPair {
+	pair := jsonEncoderPool.Get().(*jsonEncoderBufferPair)
+	pair.buffer.Reset()
+	// Reconnect the encoder to the buffer after reset
+	pair.encoder = json.NewEncoder(pair.buffer)
+	return pair
+}
+
+// putJSONEncoder returns an encoder/buffer pair to the pool
+func putJSONEncoder(pair *jsonEncoderBufferPair) {
+	jsonEncoderPool.Put(pair)
 }

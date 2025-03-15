@@ -432,10 +432,12 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Wrap the response writer to track if headers have been sent
 	trackedWriter := WrapResponseWriter(w)
+	bufferedWriter := newBufferedResponseWriter(trackedWriter, 4096)
+	defer bufferedWriter.Close()
 
 	// Get a context from the pool
 	ctx := r.pool.Get().(*Context)
-	ctx.Writer = trackedWriter
+	ctx.Writer = bufferedWriter
 	ctx.Request = req
 	ctx.ParamsCount = 0 // Reset params count
 	ctx.ClearValues()
@@ -482,6 +484,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		} else {
 			http.NotFound(trackedWriter, req)
 		}
+		bufferedWriter.Close()
 		return
 	}
 
@@ -506,6 +509,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			} else {
 				fmt.Printf("Panic occurred after response started: %v\n", err)
 			}
+			bufferedWriter.Close()
 		}
 	}()
 	// Execute the handler with middleware
@@ -521,7 +525,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		} else {
 			http.NotFound(trackedWriter, req)
 		}
+		bufferedWriter.Close()
 	}
+	bufferedWriter.Close()
 }
 
 // ### Helper Types and Functions
