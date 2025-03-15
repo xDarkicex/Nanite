@@ -2,6 +2,7 @@ package nanite
 
 import (
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,14 +27,17 @@ var validationErrorPool = sync.Pool{
 	},
 }
 
-func getValidationError(field, error string) *ValidationError {
+// getValidationError retrieves a ValidationError from the pool
+func getValidationError(field, errorMsg string) *ValidationError {
 	ve := validationErrorPool.Get().(*ValidationError)
 	ve.Field = field
-	ve.Err = error
+	ve.Err = errorMsg
 	return ve
 }
 
+// putValidationError returns a ValidationError to the pool
 func putValidationError(ve *ValidationError) {
+	// Clear the fields to prevent memory leaks
 	ve.Field = ""
 	ve.Err = ""
 	validationErrorPool.Put(ve)
@@ -259,4 +263,13 @@ func NewValidationChain(field string) *ValidationChain {
 		field: field,
 		rules: make([]ValidatorFunc, 0, 5), // Pre-allocate for efficiency
 	}
+}
+
+// CheckValidation checks if there are validation errors and sends a response if present.
+func (c *Context) CheckValidation() bool {
+	if len(c.ValidationErrs) > 0 {
+		c.JSON(http.StatusBadRequest, map[string]interface{}{"errors": c.ValidationErrs})
+		return false
+	}
+	return true
 }

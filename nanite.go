@@ -4,14 +4,11 @@
 package nanite
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -450,9 +447,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}()
+	// Execute the handler with middleware
+	r.mutex.RLock()
+	allMiddleware := make([]MiddlewareFunc, len(r.middleware))
+	copy(allMiddleware, r.middleware)
+	r.mutex.RUnlock()
 
-	// Execute the handler
-	handler(ctx)
+	executeMiddlewareChain(ctx, handler, allMiddleware)
 
 	if ctx.IsAborted() && !trackedWriter.Written() {
 		if r.config.NotFoundHandler != nil {
@@ -591,15 +592,6 @@ func (c *Context) Cookie(name, value string, options ...interface{}) {
 	http.SetCookie(c.Writer, cookie)
 }
 
-// CheckValidation checks if there are validation errors and sends a response if present.
-func (c *Context) CheckValidation() bool {
-	if len(c.ValidationErrs) > 0 {
-		c.JSON(http.StatusBadRequest, map[string]interface{}{"errors": c.ValidationErrs})
-		return false
-	}
-	return true
-}
-
 // Abort marks the request as aborted, preventing further processing.
 func (c *Context) Abort() {
 	c.aborted = true
@@ -614,154 +606,6 @@ func (c *Context) IsAborted() bool {
 func (c *Context) ClearValues() {
 	for k := range c.Values {
 		delete(c.Values, k)
-	}
-}
-
-// ClearLazyFields efficiently clears the LazyFields map without reallocating.
-func (c *Context) ClearLazyFields() {
-	for k := range c.lazyFields {
-		delete(c.lazyFields, k)
-	}
-}
-
-// ### WebSocket Wrapper
-
-// wrapWebSocketHandler wraps a WebSocketHandler into a HandlerFunc.
-func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
-	return func(ctx *Context) {
-		conn, err := r.config.Upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
-		if err != nil {
-			http.Error(ctx.Writer, "Failed to upgrade to WebSocket", http.StatusBadRequest)
-			return
-		}
-
-		conn.SetReadLimit(r.config.WebSocket.MaxMessageSize)
-		wsCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		var wg sync.WaitGroup
-
-		cleanup := func() {
-			cancel()
-			conn.Close()
-			wg.Wait()
-		}
-		defer cleanup()
-
-		conn.SetPongHandler(func(string) error {
-			conn.SetReadDeadline(time.Now().Add(r.config.WebSocket.ReadTimeout))
-			return nil
-		})
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			pingTicker := time.NewTicker(r.config.WebSocket.PingInterval)
-			defer pingTicker.Stop()
-
-			for {
-				select {
-				case <-pingTicker.C:
-					conn.SetWriteDeadline(time.Now().Add(r.config.WebSocket.WriteTimeout))
-					if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-						return
-					}
-				case <-wsCtx.Done():
-					return
-				}
-			}
-		}()
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case <-ctx.Request.Context().Done():
-				conn.WriteControl(
-					websocket.CloseMessage,
-					websocket.FormatCloseMessage(websocket.CloseGoingAway, "Server shutting down"),
-					time.Now().Add(time.Second),
-				)
-			case <-wsCtx.Done():
-			}
-		}()
-
-		conn.SetReadDeadline(time.Now().Add(r.config.WebSocket.ReadTimeout))
-		handler(conn, ctx)
-
-		conn.WriteControl(
-			websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-			time.Now().Add(time.Second),
-		)
-	}
-}
-
-// ### Validation Middleware
-
-func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
-	return func(ctx *Context, next func()) {
-		if ctx.IsAborted() {
-			return
-		}
-
-		// Handle request data parsing for POST, PUT, PATCH, DELETE methods
-		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
-			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
-
-			contentType := ctx.Request.Header.Get("Content-Type")
-
-			// Parse form data (application/x-www-form-urlencoded or multipart/form-data)
-			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
-				strings.HasPrefix(contentType, "multipart/form-data") {
-
-				if err := ctx.Request.ParseForm(); err != nil {
-					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Err: "failed to parse form data"})
-					return
-				}
-				// Store form data in ctx.Values
-				formData := make(map[string]interface{})
-				for key, values := range ctx.Request.Form {
-					if len(values) == 1 {
-						formData[key] = values[0]
-					} else {
-						formData[key] = values
-					}
-				}
-				ctx.Values["formData"] = formData
-			}
-
-			// Parse JSON body (application/json)
-			if strings.HasPrefix(contentType, "application/json") {
-				buffer := bufferPool.Get().(*bytes.Buffer)
-				buffer.Reset()
-				defer bufferPool.Put(buffer)
-
-				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
-					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Err: "failed to read request body"})
-					return
-				}
-				bodyBytes := buffer.Bytes()
-				// Restore request body for downstream use
-				ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-
-				var body map[string]interface{}
-				if err := json.Unmarshal(bodyBytes, &body); err != nil {
-					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Err: "invalid JSON"})
-					return
-				}
-				ctx.Values["body"] = body
-			}
-		}
-
-		// Attach validation rules to LazyFields
-		for _, chain := range chains {
-			field := ctx.Field(chain.field)                   // Get or create the LazyField
-			field.rules = append(field.rules, chain.rules...) // Append validation rules
-		}
-
-		// Proceed to the next middleware or handler
-		next()
 	}
 }
 
@@ -795,84 +639,6 @@ func insertChild(children []childNode, key string, node *node) []childNode {
 		children[idx] = newChild
 	}
 	return children
-}
-
-// TrackedResponseWriter wraps http.ResponseWriter to track if headers have been sent.
-type TrackedResponseWriter struct {
-	http.ResponseWriter
-	statusCode    int
-	headerWritten bool
-	bytesWritten  int64
-}
-
-// WrapResponseWriter creates a new TrackedResponseWriter.
-func WrapResponseWriter(w http.ResponseWriter) *TrackedResponseWriter {
-	return &TrackedResponseWriter{
-		ResponseWriter: w,
-		statusCode:     http.StatusOK,
-	}
-}
-
-// WriteHeader records that headers have been written.
-func (w *TrackedResponseWriter) WriteHeader(statusCode int) {
-	if !w.headerWritten {
-		w.statusCode = statusCode
-		w.ResponseWriter.WriteHeader(statusCode)
-		w.headerWritten = true
-	}
-}
-
-// Write records that data (and implicitly headers) have been written.
-func (w *TrackedResponseWriter) Write(b []byte) (int, error) {
-	if !w.headerWritten {
-		w.WriteHeader(http.StatusOK)
-	}
-	n, err := w.ResponseWriter.Write(b)
-	w.bytesWritten += int64(n)
-	return n, err
-}
-
-// Status returns the HTTP status code that was set.
-func (w *TrackedResponseWriter) Status() int {
-	return w.statusCode
-}
-
-// Written returns whether headers have been sent.
-func (w *TrackedResponseWriter) Written() bool {
-	return w.headerWritten
-}
-
-// BytesWritten returns the number of bytes written.
-func (w *TrackedResponseWriter) BytesWritten() int64 {
-	return w.bytesWritten
-}
-
-// Unwrap returns the original ResponseWriter.
-func (w *TrackedResponseWriter) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
-}
-
-// Flush implements http.Flusher interface if the underlying writer supports it.
-func (w *TrackedResponseWriter) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-// Hijack implements http.Hijacker interface if the underlying writer supports it.
-func (w *TrackedResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if hijacker, ok := w.ResponseWriter.(http.Hijacker); ok {
-		return hijacker.Hijack()
-	}
-	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
-}
-
-// Push implements http.Pusher interface if the underlying writer supports it.
-func (w *TrackedResponseWriter) Push(target string, opts *http.PushOptions) error {
-	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
-		return pusher.Push(target, opts)
-	}
-	return fmt.Errorf("underlying ResponseWriter does not implement http.Pusher")
 }
 
 // Buffer Pool for ValidationMiddleware

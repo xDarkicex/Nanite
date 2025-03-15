@@ -1,7 +1,9 @@
+// lazy_validation.go
 package nanite
 
 import "fmt"
 
+// LazyField represents a field that will be validated lazily
 type LazyField struct {
 	name      string          // The field's name (e.g., "username")
 	getValue  func() string   // Function to fetch the raw value from the request
@@ -11,32 +13,49 @@ type LazyField struct {
 	err       error           // Stores any validation error
 }
 
+// Value validates and returns the field value
 func (lf *LazyField) Value() (string, error) {
 	if !lf.validated {
 		rawValue := lf.getValue()
 		lf.value = rawValue
+
 		for _, rule := range lf.rules {
 			if err := rule(rawValue); err != nil {
-				ve := getValidationError(lf.name, err.Error())
-				lf.err = ve
+				// Use the pool to get a validation error
+				if ve, ok := err.(*ValidationError); ok {
+					// Store a copy of the error, not the pooled object
+					lf.err = &ValidationError{
+						Field: ve.Field,
+						Err:   ve.Err,
+					}
+					// Return the pooled object
+					putValidationError(ve)
+				} else {
+					// If it's not a ValidationError, create one
+					ve := getValidationError(lf.name, err.Error())
+					lf.err = &ValidationError{
+						Field: ve.Field,
+						Err:   ve.Err,
+					}
+					putValidationError(ve)
+				}
 				break
 			}
 		}
+
 		lf.validated = true
 	}
-	if lf.err != nil {
-		if ve, ok := lf.err.(*ValidationError); ok {
-			defer putValidationError(ve)
-		}
-	}
+
 	return lf.value, lf.err
 }
 
+// Field gets or creates a LazyField for the specified field name
 func (c *Context) Field(name string) *LazyField {
 	// Safety net: initialize lazyFields if nil
 	if c.lazyFields == nil {
 		c.lazyFields = make(map[string]*LazyField)
 	}
+
 	field, exists := c.lazyFields[name]
 	if !exists {
 		field = &LazyField{
@@ -46,23 +65,72 @@ func (c *Context) Field(name string) *LazyField {
 				if val := c.Request.URL.Query().Get(name); val != "" {
 					return val
 				}
+
 				if val, ok := c.GetParam(name); ok {
 					return val
 				}
+
 				if formData, ok := c.Values["formData"].(map[string]interface{}); ok {
 					if val, ok := formData[name]; ok {
 						return fmt.Sprintf("%v", val)
 					}
 				}
+
 				if body, ok := c.Values["body"].(map[string]interface{}); ok {
 					if val, ok := body[name]; ok {
 						return fmt.Sprintf("%v", val)
 					}
 				}
+
 				return ""
 			},
+			rules: []ValidatorFunc{},
 		}
+
 		c.lazyFields[name] = field
 	}
+
 	return field
+}
+
+// ValidateAllFields validates all lazy fields and collects errors
+func (c *Context) ValidateAllFields() bool {
+	if len(c.lazyFields) == 0 {
+		return true
+	}
+
+	hasErrors := false
+
+	for name, field := range c.lazyFields {
+		_, err := field.Value()
+		if err != nil {
+			if c.ValidationErrs == nil {
+				c.ValidationErrs = make(ValidationErrors, 0, len(c.lazyFields))
+			}
+
+			// Add the validation error to the context
+			if ve, ok := err.(*ValidationError); ok {
+				c.ValidationErrs = append(c.ValidationErrs, ValidationError{
+					Field: name,
+					Err:   ve.Err,
+				})
+			} else {
+				c.ValidationErrs = append(c.ValidationErrs, ValidationError{
+					Field: name,
+					Err:   err.Error(),
+				})
+			}
+
+			hasErrors = true
+		}
+	}
+
+	return !hasErrors
+}
+
+// ClearLazyFields efficiently clears the LazyFields map without reallocating.
+func (c *Context) ClearLazyFields() {
+	for k := range c.lazyFields {
+		delete(c.lazyFields, k)
+	}
 }
