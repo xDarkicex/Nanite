@@ -53,6 +53,7 @@ type Context struct {
 	ParamsCount    int                    // Number of parameters used
 	Values         map[string]interface{} // General-purpose value storage
 	ValidationErrs ValidationErrors       // Validation errors, if any
+	lazyFields     map[string]*LazyField  // Lazy validation fields
 	aborted        bool                   // Flag indicating if request is aborted
 }
 
@@ -148,9 +149,10 @@ func New() *Router {
 	// Initialize context pool with pre-allocated structures
 	r.pool.New = func() interface{} {
 		return &Context{
-			Params:  [5]Param{},
-			Values:  make(map[string]interface{}, 8),
-			aborted: false,
+			Params:     [5]Param{},
+			Values:     make(map[string]interface{}, 8),
+			lazyFields: make(map[string]*LazyField),
+			aborted:    false,
 		}
 	}
 	// Set up WebSocket upgrader with default settings
@@ -607,6 +609,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ctx.Request = req
 	ctx.ParamsCount = 0 // Reset params count
 	ctx.ClearValues()
+	ctx.ClearLazyFields()
 	ctx.ValidationErrs = nil
 	ctx.aborted = false
 
@@ -839,6 +842,13 @@ func (c *Context) ClearValues() {
 	}
 }
 
+// ClearLazyFields efficiently clears the LazyFields map without reallocating.
+func (c *Context) ClearLazyFields() {
+	for k := range c.lazyFields {
+		delete(c.lazyFields, k)
+	}
+}
+
 // ### WebSocket Wrapper
 
 // wrapWebSocketHandler wraps a WebSocketHandler into a HandlerFunc.
@@ -914,170 +924,236 @@ func (r *Router) wrapWebSocketHandler(handler WebSocketHandler) HandlerFunc {
 
 // ### Validation Middleware
 
-// ValidationMiddleware returns a middleware function that performs validation.
 func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 	return func(ctx *Context, next func()) {
 		if ctx.IsAborted() {
 			return
 		}
 
-		var errs ValidationErrors
-
+		// Handle request data parsing for POST, PUT, PATCH, DELETE methods
 		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
 			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
 
 			contentType := ctx.Request.Header.Get("Content-Type")
 
+			// Parse form data (application/x-www-form-urlencoded or multipart/form-data)
 			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
 				strings.HasPrefix(contentType, "multipart/form-data") {
 
 				if err := ctx.Request.ParseForm(); err != nil {
-					errs = append(errs, ValidationError{Field: "", Error: "failed to parse form data"})
-				} else {
-					if formDataVal, exists := ctx.Values["formData"]; exists {
-						if formData, ok := formDataVal.(map[string]interface{}); ok {
-							for k := range formData {
-								delete(formData, k)
-							}
-							for key, values := range ctx.Request.Form {
-								if len(values) == 1 {
-									formData[key] = values[0]
-								} else {
-									formData[key] = values
-								}
-							}
-						} else {
-							formData := make(map[string]interface{})
-							for key, values := range ctx.Request.Form {
-								if len(values) == 1 {
-									formData[key] = values[0]
-								} else {
-									formData[key] = values
-								}
-							}
-							ctx.Values["formData"] = formData
-						}
+					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Error: "failed to parse form data"})
+					return
+				}
+				// Store form data in ctx.Values
+				formData := make(map[string]interface{})
+				for key, values := range ctx.Request.Form {
+					if len(values) == 1 {
+						formData[key] = values[0]
 					} else {
-						formData := make(map[string]interface{})
-						for key, values := range ctx.Request.Form {
-							if len(values) == 1 {
-								formData[key] = values[0]
-							} else {
-								formData[key] = values
-							}
-						}
-						ctx.Values["formData"] = formData
+						formData[key] = values
 					}
 				}
+				ctx.Values["formData"] = formData
 			}
 
+			// Parse JSON body (application/json)
 			if strings.HasPrefix(contentType, "application/json") {
 				buffer := bufferPool.Get().(*bytes.Buffer)
 				buffer.Reset()
 				defer bufferPool.Put(buffer)
 
 				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
-					errs = append(errs, ValidationError{Field: "", Error: "failed to read request body"})
-				} else {
-					bodyBytes := buffer.Bytes()
-					ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-
-					if bodyVal, exists := ctx.Values["body"]; exists {
-						if body, ok := bodyVal.(map[string]interface{}); ok {
-							for k := range body {
-								delete(body, k)
-							}
-							if err := json.Unmarshal(bodyBytes, &body); err != nil {
-								errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
-							}
-						} else {
-							var body map[string]interface{}
-							if err := json.Unmarshal(bodyBytes, &body); err == nil {
-								ctx.Values["body"] = body
-							} else {
-								errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
-							}
-						}
-					} else {
-						var body map[string]interface{}
-						if err := json.Unmarshal(bodyBytes, &body); err == nil {
-							ctx.Values["body"] = body
-						} else {
-							errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
-						}
-					}
+					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Error: "failed to read request body"})
+					return
 				}
+				bodyBytes := buffer.Bytes()
+				// Restore request body for downstream use
+				ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+				var body map[string]interface{}
+				if err := json.Unmarshal(bodyBytes, &body); err != nil {
+					ctx.ValidationErrs = append(ctx.ValidationErrs, ValidationError{Field: "", Error: "invalid JSON"})
+					return
+				}
+				ctx.Values["body"] = body
 			}
 		}
 
+		// Attach validation rules to LazyFields
 		for _, chain := range chains {
-			var value interface{}
-			var found bool
-
-			if val := ctx.Request.URL.Query().Get(chain.field); val != "" {
-				value = val
-				found = true
-			} else if val, ok := ctx.GetParam(chain.field); ok {
-				value = val
-				found = true
-			} else if formData, ok := ctx.Values["formData"].(map[string]interface{}); ok {
-				if val, ok := formData[chain.field]; ok {
-					value = val
-					found = true
-				}
-			} else if body, ok := ctx.Values["body"].(map[string]interface{}); ok {
-				if val, ok := body[chain.field]; ok {
-					value = val
-					found = true
-				}
-			}
-
-			if found {
-				for _, rule := range chain.rules {
-					strValue := ""
-					switch v := value.(type) {
-					case string:
-						strValue = v
-					case float64:
-						strValue = strconv.FormatFloat(v, 'f', -1, 64)
-					case int:
-						strValue = strconv.Itoa(v)
-					case bool:
-						strValue = strconv.FormatBool(v)
-					case []interface{}:
-						if jsonBytes, err := json.Marshal(v); err == nil {
-							strValue = string(jsonBytes)
-						}
-					case map[string]interface{}:
-						if jsonBytes, err := json.Marshal(v); err == nil {
-							strValue = string(jsonBytes)
-						}
-					default:
-						strValue = fmt.Sprintf("%v", v)
-					}
-
-					if err := rule(strValue); err != nil {
-						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
-						break
-					}
-				}
-			} else {
-				for _, rule := range chain.rules {
-					if err := rule(""); err != nil {
-						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
-						break
-					}
-				}
-			}
+			field := ctx.Field(chain.field)                   // Get or create the LazyField
+			field.rules = append(field.rules, chain.rules...) // Append validation rules
 		}
 
-		if len(errs) > 0 {
-			ctx.ValidationErrs = errs
-		}
-
+		// Proceed to the next middleware or handler
 		next()
 	}
 }
+
+// ValidationMiddleware returns a middleware function that performs validation.
+// func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
+// 	return func(ctx *Context, next func()) {
+// 		if ctx.IsAborted() {
+// 			return
+// 		}
+
+// 		var errs ValidationErrors
+
+// 		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
+// 			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
+
+// 			contentType := ctx.Request.Header.Get("Content-Type")
+
+// 			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
+// 				strings.HasPrefix(contentType, "multipart/form-data") {
+
+// 				if err := ctx.Request.ParseForm(); err != nil {
+// 					errs = append(errs, ValidationError{Field: "", Error: "failed to parse form data"})
+// 				} else {
+// 					if formDataVal, exists := ctx.Values["formData"]; exists {
+// 						if formData, ok := formDataVal.(map[string]interface{}); ok {
+// 							for k := range formData {
+// 								delete(formData, k)
+// 							}
+// 							for key, values := range ctx.Request.Form {
+// 								if len(values) == 1 {
+// 									formData[key] = values[0]
+// 								} else {
+// 									formData[key] = values
+// 								}
+// 							}
+// 						} else {
+// 							formData := make(map[string]interface{})
+// 							for key, values := range ctx.Request.Form {
+// 								if len(values) == 1 {
+// 									formData[key] = values[0]
+// 								} else {
+// 									formData[key] = values
+// 								}
+// 							}
+// 							ctx.Values["formData"] = formData
+// 						}
+// 					} else {
+// 						formData := make(map[string]interface{})
+// 						for key, values := range ctx.Request.Form {
+// 							if len(values) == 1 {
+// 								formData[key] = values[0]
+// 							} else {
+// 								formData[key] = values
+// 							}
+// 						}
+// 						ctx.Values["formData"] = formData
+// 					}
+// 				}
+// 			}
+
+// 			if strings.HasPrefix(contentType, "application/json") {
+// 				buffer := bufferPool.Get().(*bytes.Buffer)
+// 				buffer.Reset()
+// 				defer bufferPool.Put(buffer)
+
+// 				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
+// 					errs = append(errs, ValidationError{Field: "", Error: "failed to read request body"})
+// 				} else {
+// 					bodyBytes := buffer.Bytes()
+// 					ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+// 					if bodyVal, exists := ctx.Values["body"]; exists {
+// 						if body, ok := bodyVal.(map[string]interface{}); ok {
+// 							for k := range body {
+// 								delete(body, k)
+// 							}
+// 							if err := json.Unmarshal(bodyBytes, &body); err != nil {
+// 								errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
+// 							}
+// 						} else {
+// 							var body map[string]interface{}
+// 							if err := json.Unmarshal(bodyBytes, &body); err == nil {
+// 								ctx.Values["body"] = body
+// 							} else {
+// 								errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
+// 							}
+// 						}
+// 					} else {
+// 						var body map[string]interface{}
+// 						if err := json.Unmarshal(bodyBytes, &body); err == nil {
+// 							ctx.Values["body"] = body
+// 						} else {
+// 							errs = append(errs, ValidationError{Field: "", Error: "invalid JSON"})
+// 						}
+// 					}
+// 				}
+// 			}
+// 		}
+
+// 		for _, chain := range chains {
+// 			var value interface{}
+// 			var found bool
+
+// 			if val := ctx.Request.URL.Query().Get(chain.field); val != "" {
+// 				value = val
+// 				found = true
+// 			} else if val, ok := ctx.GetParam(chain.field); ok {
+// 				value = val
+// 				found = true
+// 			} else if formData, ok := ctx.Values["formData"].(map[string]interface{}); ok {
+// 				if val, ok := formData[chain.field]; ok {
+// 					value = val
+// 					found = true
+// 				}
+// 			} else if body, ok := ctx.Values["body"].(map[string]interface{}); ok {
+// 				if val, ok := body[chain.field]; ok {
+// 					value = val
+// 					found = true
+// 				}
+// 			}
+
+// 			if found {
+// 				for _, rule := range chain.rules {
+// 					strValue := ""
+// 					switch v := value.(type) {
+// 					case string:
+// 						strValue = v
+// 					case float64:
+// 						strValue = strconv.FormatFloat(v, 'f', -1, 64)
+// 					case int:
+// 						strValue = strconv.Itoa(v)
+// 					case bool:
+// 						strValue = strconv.FormatBool(v)
+// 					case []interface{}:
+// 						if jsonBytes, err := json.Marshal(v); err == nil {
+// 							strValue = string(jsonBytes)
+// 						}
+// 					case map[string]interface{}:
+// 						if jsonBytes, err := json.Marshal(v); err == nil {
+// 							strValue = string(jsonBytes)
+// 						}
+// 					default:
+// 						strValue = fmt.Sprintf("%v", v)
+// 					}
+
+// 					if err := rule(strValue); err != nil {
+// 						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
+// 						break
+// 					}
+// 				}
+// 			} else {
+// 				for _, rule := range chain.rules {
+// 					if err := rule(""); err != nil {
+// 						errs = append(errs, ValidationError{Field: chain.field, Error: err.Error()})
+// 						break
+// 					}
+// 				}
+// 			}
+// 		}
+
+// 		if len(errs) > 0 {
+// 			ctx.ValidationErrs = errs
+// 		}
+
+// 		next()
+// 	}
+// }
 
 // ### Helper Types and Functions
 
