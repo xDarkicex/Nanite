@@ -167,3 +167,23 @@ func (c *Context) CheckValidation() bool {
 
 	return fieldsValid
 }
+
+// CleanupPooledResources returns all pooled resources to their respective pools
+func (c *Context) CleanupPooledResources() {
+	// Clean up maps from Values
+	for k, v := range c.Values {
+		if m, ok := v.(map[string]interface{}); ok {
+			putMap(m)
+		}
+		delete(c.Values, k)
+	}
+
+	// Clean up lazy fields
+	c.ClearLazyFields()
+
+	// Return ValidationErrs to the pool
+	if c.ValidationErrs != nil {
+		putValidationErrors(c.ValidationErrs)
+		c.ValidationErrs = nil
+	}
+}

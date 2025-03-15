@@ -78,6 +78,7 @@ func (c *Context) Field(name string) *LazyField {
 }
 
 // In lazy_validation.go, update ValidateAllFields
+// In lazy_validation.go, update ValidateAllFields
 func (c *Context) ValidateAllFields() bool {
 	if len(c.lazyFields) == 0 {
 		return true
@@ -92,15 +93,17 @@ func (c *Context) ValidateAllFields() bool {
 				c.ValidationErrs = getValidationErrors()
 			}
 
-			// Add the validation error to the context using the pool
+			// More efficient approach - directly add to the slice
 			if ve, ok := err.(*ValidationError); ok {
-				newErr := getValidationError(name, ve.Err)
-				c.ValidationErrs = append(c.ValidationErrs, *newErr)
-				putValidationError(newErr)
+				c.ValidationErrs = append(c.ValidationErrs, ValidationError{
+					Field: name,
+					Err:   ve.Err,
+				})
 			} else {
-				newErr := getValidationError(name, err.Error())
-				c.ValidationErrs = append(c.ValidationErrs, *newErr)
-				putValidationError(newErr)
+				c.ValidationErrs = append(c.ValidationErrs, ValidationError{
+					Field: name,
+					Err:   err.Error(),
+				})
 			}
 
 			hasErrors = true

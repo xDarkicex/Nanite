@@ -385,20 +385,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Ensure context is returned to pool when done
 	defer func() {
-		// Clean up maps from Values
-		if formData, ok := ctx.Values["formData"].(map[string]interface{}); ok {
-			putMap(formData)
-		}
-		if body, ok := ctx.Values["body"].(map[string]interface{}); ok {
-			putMap(body)
-		}
-
-		// Return ValidationErrs to the pool
-		if ctx.ValidationErrs != nil {
-			putValidationErrors(ctx.ValidationErrs)
-			ctx.ValidationErrs = nil
-		}
-		// Return the context to the pool
+		ctx.CleanupPooledResources()
 		r.pool.Put(ctx)
 	}()
 
