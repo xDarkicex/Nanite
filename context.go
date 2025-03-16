@@ -278,8 +278,10 @@ func (c *Context) ValidateAllFields() bool {
 				c.ValidationErrs = slices.Grow(c.ValidationErrs, len(c.lazyFields))
 			}
 
-			// The field name should come from the map key (name variable)
-			c.ValidationErrs = append(c.ValidationErrs, *err)
+			// Create a copy of the error with the map key as the field name
+			errorCopy := *err
+			errorCopy.Field = name // Use the map key as the field name
+			c.ValidationErrs = append(c.ValidationErrs, errorCopy)
 
 			hasErrors = true
 		}
