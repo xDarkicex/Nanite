@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -93,11 +92,33 @@ type staticRoute struct {
 	params  []Param
 }
 
+// ### Radix Structure
+
+// RadixNode represents a node in the radix tree
+type RadixNode struct {
+	// The path segment this node represents
+	prefix string
+
+	// Handler for this route (if terminal)
+	handler HandlerFunc
+
+	// Static children indexed by their first byte for quick lookup
+	children map[byte]*RadixNode
+
+	// Special children for parameters and wildcards
+	paramChild    *RadixNode
+	wildcardChild *RadixNode
+
+	// Parameter/wildcard names if applicable
+	paramName    string
+	wildcardName string
+}
+
 // ### Router Structure
 
 // Router is the main router type that manages HTTP and WebSocket requests.
 type Router struct {
-	trees        map[string]*node                  // Routing trees by HTTP method
+	trees        map[string]*RadixNode             // Routing trees by HTTP method
 	pool         sync.Pool                         // Pool for reusing Context instances
 	mutex        sync.RWMutex                      // Mutex for thread-safe middleware updates
 	middleware   []MiddlewareFunc                  // Global middleware stack
@@ -112,7 +133,7 @@ type Router struct {
 // It initializes the routing trees, context pool, and WebSocket settings.
 func New() *Router {
 	r := &Router{
-		trees:        make(map[string]*node),
+		trees:        make(map[string]*RadixNode),
 		staticRoutes: make(map[string]map[string]staticRoute),
 		config: &Config{
 			WebSocket: &WebSocketConfig{
@@ -272,71 +293,15 @@ func (r *Router) ServeStatic(prefix, root string) {
 
 // ### Helper Functions
 
-// parsePath splits a path into segments for routing.
-// depricated
-func parsePath(path string) []string {
-	if path == "/" || path == "" {
-		return []string{}
-	}
-
-	// Pre-allocate with larger capacity for common case
-	var partsArray [12]string
-	count := 0
-
-	start := 0
-	for i := 0; i < len(path); i++ {
-		if path[i] == '/' {
-			if i > start {
-				if count < len(partsArray) {
-					partsArray[count] = path[start:i]
-					count++
-				} else {
-					// Rare case: more than 12 segments
-					result := make([]string, count, count+8)
-					copy(result, partsArray[:count])
-					result = append(result, path[start:i])
-
-					// Handle remaining parts
-					for j := i + 1; j < len(path); j++ {
-						if path[j] == '/' {
-							if j > i+1 {
-								result = append(result, path[i+1:j])
-							}
-							i = j
-						}
-					}
-
-					// Add final part if exists
-					if i+1 < len(path) {
-						result = append(result, path[i+1:])
-					}
-
-					return result
-				}
-			}
-			start = i + 1
-		}
-	}
-
-	// Add final part if exists
-	if start < len(path) {
-		partsArray[count] = path[start:]
-		count++
-	}
-
-	return partsArray[:count]
-}
-
 // addRoute adds a route to the router's tree for the given method and path.
-// It optimizes static routes with a fast path lookup and builds a trie for dynamic routes.
+// It optimizes static routes with a fast path lookup and builds a RadixTree for dynamic routes.
 func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	// Pre-build the middleware chain once for both static and dynamic routes
+	// Pre-build middleware chain (keep this unchanged)
 	allMiddleware := append(r.middleware, middleware...)
 	wrapped := handler
-
 	for i := len(allMiddleware) - 1; i >= 0; i-- {
 		mw := allMiddleware[i]
 		next := wrapped
@@ -351,81 +316,34 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 		}
 	}
 
-	// Fast path: Check if this is a static route (no params or wildcards)
-	isStatic := true
-	for i := 0; i < len(path); i++ {
-		if path[i] == ':' || path[i] == '*' {
-			isStatic = false
-			break
-		}
-	}
-
-	// Initialize static routes map if needed
-	if _, exists := r.staticRoutes[method]; !exists {
-		r.staticRoutes[method] = make(map[string]staticRoute)
-	}
-
-	// Store in fast path map if static
+	// Keep static routes optimization
+	isStatic := !strings.Contains(path, ":") && !strings.Contains(path, "*")
 	if isStatic {
-		r.staticRoutes[method][path] = staticRoute{
-			handler: wrapped,
-			params:  []Param{},
+		if _, exists := r.staticRoutes[method]; !exists {
+			r.staticRoutes[method] = make(map[string]staticRoute)
 		}
+		r.staticRoutes[method][path] = staticRoute{handler: wrapped, params: []Param{}}
 	}
 
-	// Initialize method tree if needed (only once)
+	// Initialize or use existing method tree
 	if _, exists := r.trees[method]; !exists {
-		r.trees[method] = &node{children: []childNode{}}
-	}
-
-	// Always add to the trie for consistent behavior
-	cur := r.trees[method]
-	parser := NewPathParser(path)
-
-	for i := 0; i < parser.Count(); i++ {
-		var key string
-
-		if parser.IsParam(i) {
-			key = ":"
-			cur.paramName = parser.ParamName(i)
-		} else if parser.IsWildcard(i) {
-			cur.wildcard = true
-			cur.paramName = parser.ParamName(i)
-			if cur.paramName == "" {
-				cur.paramName = "*"
-			}
-			break // Wildcard ends the path
-		} else {
-			key = parser.Part(i)
-		}
-
-		// Binary search for child node position
-		idx := sort.Search(len(cur.children), func(j int) bool {
-			return cur.children[j].key >= key
-		})
-
-		if idx < len(cur.children) && cur.children[idx].key == key {
-			// Existing node found
-			cur = cur.children[idx].node
-		} else {
-			// Create new node
-			newNode := &node{
-				path:     parser.Part(i),
-				children: []childNode{},
-			}
-
-			if parser.IsParam(i) {
-				newNode.paramName = parser.ParamName(i)
-			}
-
-			// Insert at sorted position
-			cur.children = slices.Insert(cur.children, idx, childNode{key: key, node: newNode})
-			cur = newNode
+		r.trees[method] = &RadixNode{
+			prefix:   "",
+			children: make(map[byte]*RadixNode),
 		}
 	}
 
-	// Set handler for the final node
-	cur.handler = wrapped
+	// Insert into radix tree
+	root := r.trees[method]
+	if path == "" || path == "/" {
+		root.handler = wrapped
+	} else {
+		// Normalize path
+		if path[0] != '/' {
+			path = "/" + path
+		}
+		root.insertRoute(path[1:], wrapped) // Skip leading slash
+	}
 }
 
 // findHandlerAndMiddleware finds the handler and parameters for a given method and path.
@@ -433,7 +351,6 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []Param) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
-
 	// Fast path: check static routes first (O(1) lookup)
 	if methodRoutes, exists := r.staticRoutes[method]; exists {
 		if route, found := methodRoutes[path]; found {
@@ -441,104 +358,19 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 		}
 	}
 
-	// Slow path: use trie traversal for dynamic routes
+	// Use radix tree for dynamic routes
 	if tree, exists := r.trees[method]; exists {
-		cur := tree
+		// Use an empty params slice that we'll populate
+		params := make([]Param, 0, 5)
 
-		// Use a fixed-size array for params to avoid allocations in common case
-		var paramsArray [5]Param
-		paramsCount := 0
-
-		parser := NewPathParser(path)
-
-		for i := 0; i < parser.Count(); i++ {
-			part := parser.Part(i)
-
-			// Fast path for wildcard nodes
-			if cur.wildcard {
-				// Capture remaining path as wildcard parameter
-				if cur.paramName != "" {
-					// Calculate remaining path without allocating new strings
-					var remainingPath string
-					if i < parser.Count() {
-						// Get the start of the current part
-						startIdx := parser.parts[i].Start
-						// Use the original path from this point
-						remainingPath = path[startIdx:]
-					}
-
-					// Add param to fixed-size array if possible
-					if paramsCount < len(paramsArray) {
-						paramsArray[paramsCount] = Param{Key: cur.paramName, Value: remainingPath}
-						paramsCount++
-					} else {
-						// Rare case: more than 5 params
-						params := make([]Param, paramsCount, paramsCount+1)
-						copy(params, paramsArray[:paramsCount])
-						params = append(params, Param{Key: cur.paramName, Value: remainingPath})
-
-						if cur.handler != nil {
-							return cur.handler, params
-						}
-						return nil, nil
-					}
-				}
-
-				if cur.handler != nil {
-					return cur.handler, paramsArray[:paramsCount]
-				}
-
-				return nil, nil
-			}
-
-			// Binary search for exact match (O(log n) lookup)
-			idx := sort.Search(len(cur.children), func(j int) bool {
-				return cur.children[j].key >= part
-			})
-
-			if idx < len(cur.children) && cur.children[idx].key == part {
-				cur = cur.children[idx].node
-			} else {
-				// Binary search for parameter match
-				idx = sort.Search(len(cur.children), func(j int) bool {
-					return cur.children[j].key >= ":"
-				})
-
-				if idx < len(cur.children) && cur.children[idx].key == ":" {
-					cur = cur.children[idx].node
-					if cur.paramName != "" {
-						// Add param to fixed-size array if possible
-						if paramsCount < len(paramsArray) {
-							paramsArray[paramsCount] = Param{Key: cur.paramName, Value: part}
-							paramsCount++
-						} else {
-							// Rare case: more than 5 params
-							params := make([]Param, paramsCount, paramsCount+1)
-							copy(params, paramsArray[:paramsCount])
-							params = append(params, Param{Key: cur.paramName, Value: part})
-
-							// Continue traversal with dynamic params slice
-							for i++; i < parser.Count(); i++ {
-								// Similar traversal logic but with dynamic params slice
-								// This branch is rare, so the slight code duplication is acceptable for performance
-								// ...
-							}
-
-							if cur.handler != nil {
-								return cur.handler, params
-							}
-							return nil, nil
-						}
-					}
-				} else {
-					return nil, nil
-				}
-			}
+		// Skip leading slash for consistency with insertRoute
+		searchPath := path
+		if len(path) > 0 && path[0] == '/' {
+			searchPath = path[1:]
 		}
 
-		if cur.handler != nil {
-			return cur.handler, paramsArray[:paramsCount]
-		}
+		handler, params := tree.findRoute(searchPath, params)
+		return handler, params
 	}
 
 	return nil, nil
@@ -648,29 +480,252 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // ### Helper Types and Functions
 
-// childNode represents a child node in the routing tree.
-type childNode struct {
-	key  string
-	node *node
-}
-
-// node represents a node in the routing tree.
-type node struct {
-	path      string
-	paramName string
-	wildcard  bool
-	handler   HandlerFunc
-	children  []childNode
-}
-
-// insertChild inserts a child node into the sorted list of children.
-func insertChild(children []childNode, key string, node *node) []childNode {
-	idx := sort.Search(len(children), func(i int) bool { return children[i].key >= key })
-	if idx < len(children) && children[idx].key == key {
-		children[idx].node = node
-	} else {
-		newChild := childNode{key: key, node: node}
-		children = slices.Insert(children, idx, newChild)
+// longestCommonPrefix finds the longest common prefix of two strings
+func longestCommonPrefix(a, b string) int {
+	max := len(a)
+	if len(b) < max {
+		max = len(b)
 	}
-	return children
+
+	for i := 0; i < max; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+
+	return max
+}
+
+// findRoute searches for a route in the radix tree.
+func (n *RadixNode) findRoute(path string, params []Param) (HandlerFunc, []Param) {
+	// Base case: empty path
+	if path == "" {
+		return n.handler, params
+	}
+
+	// Try static children first
+	if len(path) > 0 {
+		if child, exists := n.children[path[0]]; exists {
+			if strings.HasPrefix(path, child.prefix) {
+				// Remove the prefix from the path
+				subPath := path[len(child.prefix):]
+
+				// IMPORTANT: Remove leading slash if present
+				if len(subPath) > 0 && subPath[0] == '/' {
+					subPath = subPath[1:]
+				}
+
+				if handler, subParams := child.findRoute(subPath, params); handler != nil {
+					return handler, subParams
+				}
+			}
+		}
+	}
+
+	// Try parameter child
+	if n.paramChild != nil {
+		// Extract parameter value
+		i := 0
+		for i < len(path) && path[i] != '/' {
+			i++
+		}
+
+		paramValue := path[:i]
+		remainingPath := ""
+		if i < len(path) {
+			remainingPath = path[i:]
+			if len(remainingPath) > 0 && remainingPath[0] == '/' {
+				remainingPath = remainingPath[1:] // Skip the slash
+			}
+		}
+
+		// Add parameter to params
+		newParams := append(params, Param{Key: n.paramChild.paramName, Value: paramValue})
+
+		// If no remaining path, return the handler directly
+		if remainingPath == "" {
+			return n.paramChild.handler, newParams
+		}
+
+		// Continue with parameter child
+		if handler, subParams := n.paramChild.findRoute(remainingPath, newParams); handler != nil {
+			return handler, subParams
+		}
+	}
+
+	// Try wildcard as a last resort
+	if n.wildcardChild != nil {
+		newParams := append(params, Param{Key: n.wildcardChild.wildcardName, Value: path})
+		return n.wildcardChild.handler, newParams
+	}
+
+	return nil, nil
+}
+
+// insertRoute inserts a route into the radix tree.
+func (n *RadixNode) insertRoute(path string, handler HandlerFunc) {
+	// Base case: empty path
+	if path == "" {
+		n.handler = handler
+		return
+	}
+
+	// Handle parameters (:id)
+	if path[0] == ':' {
+		// Extract parameter name and remaining path
+		paramEnd := strings.IndexByte(path, '/')
+		var paramName, remainingPath string
+
+		if paramEnd == -1 {
+			paramName = path[1:]
+			remainingPath = ""
+		} else {
+			paramName = path[1:paramEnd]
+			remainingPath = path[paramEnd:]
+		}
+
+		// Create parameter child if needed
+		if n.paramChild == nil {
+			n.paramChild = &RadixNode{
+				prefix:    ":" + paramName,
+				paramName: paramName,
+				children:  make(map[byte]*RadixNode),
+			}
+		}
+
+		// Continue with remaining path
+		if remainingPath == "" {
+			n.paramChild.handler = handler
+		} else {
+			n.paramChild.insertRoute(remainingPath, handler)
+		}
+
+		return
+	}
+
+	// Handle wildcards (*path)
+	if path[0] == '*' {
+		n.wildcardChild = &RadixNode{
+			prefix:       path,
+			handler:      handler,
+			wildcardName: path[1:],
+			children:     make(map[byte]*RadixNode),
+		}
+		return
+	}
+
+	// Find the first differing character
+	var i int
+	for i = 0; i < len(path); i++ {
+		if path[i] == '/' || path[i] == ':' || path[i] == '*' {
+			break
+		}
+	}
+
+	// Extract the current segment
+	segment := path[:i]
+	remainingPath := ""
+	if i < len(path) {
+		remainingPath = path[i:]
+	}
+
+	// Add check for empty segment to prevent index out of range panic
+	if len(segment) == 0 {
+		// Skip empty segments and continue with remaining path
+		if remainingPath != "" && len(remainingPath) > 0 {
+			// If remainingPath starts with a slash, skip it
+			if remainingPath[0] == '/' {
+				remainingPath = remainingPath[1:]
+			}
+			n.insertRoute(remainingPath, handler)
+			return
+		}
+		// If no remaining path, set handler on current node
+		n.handler = handler
+		return
+	}
+
+	// Look for matching child
+	c, exists := n.children[segment[0]]
+	if !exists {
+		// Create new child
+		c = &RadixNode{
+			prefix:   segment,
+			children: make(map[byte]*RadixNode),
+		}
+		n.children[segment[0]] = c
+
+		// Set handler or continue with remaining path
+		if remainingPath == "" {
+			c.handler = handler
+		} else {
+			c.insertRoute(remainingPath, handler)
+		}
+		return
+	}
+
+	// Find common prefix length
+	commonPrefixLen := longestCommonPrefix(c.prefix, segment)
+
+	if commonPrefixLen == len(c.prefix) {
+		// Child prefix is completely contained in this segment
+		if commonPrefixLen == len(segment) {
+			// Exact match, continue with remaining path
+			if remainingPath == "" {
+				c.handler = handler
+			} else {
+				c.insertRoute(remainingPath, handler)
+			}
+		} else {
+			// Current segment extends beyond child prefix
+			c.insertRoute(segment[commonPrefixLen:]+remainingPath, handler)
+		}
+	} else {
+		// Need to split the node
+		child := &RadixNode{
+			prefix:        c.prefix[commonPrefixLen:],
+			handler:       c.handler,
+			children:      c.children,
+			paramChild:    c.paramChild,
+			wildcardChild: c.wildcardChild,
+			paramName:     c.paramName,
+			wildcardName:  c.wildcardName,
+		}
+
+		// Reset the original child
+		c.prefix = c.prefix[:commonPrefixLen]
+		c.handler = nil
+		c.children = make(map[byte]*RadixNode)
+		c.paramChild = nil
+		c.wildcardChild = nil
+		c.paramName = ""
+		c.wildcardName = ""
+
+		// Add the split node as a child
+		c.children[child.prefix[0]] = child
+
+		// Handle current path
+		if commonPrefixLen == len(segment) {
+			// Current segment matches prefix exactly
+			if remainingPath == "" {
+				c.handler = handler
+			} else {
+				c.insertRoute(remainingPath, handler)
+			}
+		} else {
+			// Current segment extends beyond common prefix
+			newChild := &RadixNode{
+				prefix:   segment[commonPrefixLen:],
+				children: make(map[byte]*RadixNode),
+			}
+
+			if remainingPath == "" {
+				newChild.handler = handler
+			} else {
+				newChild.insertRoute(remainingPath, handler)
+			}
+
+			c.children[newChild.prefix[0]] = newChild
+		}
+	}
 }
