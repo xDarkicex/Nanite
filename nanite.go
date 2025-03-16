@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -462,10 +461,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}()
 	// Execute the handler with middleware
 	r.mutex.RLock()
-	allMiddleware := slices.Clone(r.middleware)
+	executeMiddlewareChain(ctx, handler, r.middleware)
 	r.mutex.RUnlock()
-
-	executeMiddlewareChain(ctx, handler, allMiddleware)
 
 	if ctx.IsAborted() && !trackedWriter.Written() {
 		if r.config.NotFoundHandler != nil {
