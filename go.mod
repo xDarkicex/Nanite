@@ -1,4 +1,4 @@
-module github.com/xDarkicex/Nanite
+module github.com/xDarkicex/nanite
 
 go 1.21.6
 
