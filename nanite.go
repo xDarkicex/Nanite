@@ -72,6 +72,8 @@ type Config struct {
 	ErrorHandler    func(*Context, error) // Custom error handler
 	Upgrader        *websocket.Upgrader   // WebSocket upgrader configuration
 	WebSocket       *WebSocketConfig      // WebSocket-specific settings
+	RouteCacheSize  int                   // Add this field
+	RouteMaxParams  int                   // Add this field
 }
 
 // WebSocketConfig holds configuration options for WebSocket connections.
@@ -124,6 +126,7 @@ type Router struct {
 	config       *Config                           // Router configuration
 	httpClient   *http.Client                      // HTTP client for proxying or external requests
 	staticRoutes map[string]map[string]staticRoute // method -> exact path -> handler
+	routeCache   *LRUCache                         // Route cache
 }
 
 // ### Router Initialization
@@ -142,6 +145,8 @@ func New() *Router {
 				MaxMessageSize: 1024 * 1024, // 1MB
 				BufferSize:     4096,
 			},
+			RouteCacheSize: 1024, // Default cache size
+			RouteMaxParams: 10,   // Default max params
 		},
 		httpClient: &http.Client{
 			Transport: &http.Transport{
@@ -174,6 +179,8 @@ func New() *Router {
 		ReadBufferSize:  r.config.WebSocket.BufferSize,
 		WriteBufferSize: r.config.WebSocket.BufferSize,
 	}
+	// Initialize the route cache
+	r.routeCache = NewLRUCache(r.config.RouteCacheSize, r.config.RouteMaxParams)
 	return r
 }
 
@@ -350,10 +357,18 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []Param) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
+
 	// Fast path: check static routes first (O(1) lookup)
 	if methodRoutes, exists := r.staticRoutes[method]; exists {
 		if route, found := methodRoutes[path]; found {
 			return route.handler, route.params
+		}
+	}
+
+	// Check LRU cache before doing the more expensive radix tree lookup
+	if r.routeCache != nil {
+		if handler, params, found := r.routeCache.Get(method, path); found {
+			return handler, params
 		}
 	}
 
@@ -362,13 +377,18 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 		// Use an empty params slice that we'll populate
 		params := make([]Param, 0, 5)
 
-		// Skip leading slash for consistency with insertRoute
 		searchPath := path
 		if len(path) > 0 && path[0] == '/' {
 			searchPath = path[1:]
 		}
 
 		handler, params := tree.findRoute(searchPath, params)
+
+		// Cache successful lookups
+		if handler != nil && r.routeCache != nil {
+			r.routeCache.Add(method, path, handler, params)
+		}
+
 		return handler, params
 	}
 
