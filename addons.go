@@ -248,6 +248,19 @@ func normalizePath(path string) string {
 
 // ### Validation Middleware
 
+// ValidationMiddleware creates middleware that validates request data using the provided validation chains.
+// It handles parsing of form data and JSON bodies for common HTTP methods (POST, PUT, PATCH, DELETE)
+// and applies the validation rules specified in the chains.
+//
+// The middleware uses an optimized zero-copy approach with io.TeeReader for JSON body processing,
+// which reduces memory usage by reading the request body only once while simultaneously making it
+// available for JSON parsing and preserving it for downstream handlers.
+//
+// Parameters:
+//   - chains: ValidationChain objects containing field names and validation rules
+//
+// Returns:
+//   - MiddlewareFunc: Middleware function that can be registered with the router
 func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 	return func(ctx *Context, next func()) {
 		if ctx.IsAborted() {
@@ -257,7 +270,6 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 		// Handle request data parsing for POST, PUT, PATCH, DELETE methods
 		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
 			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
-
 			contentType := ctx.Request.Header.Get("Content-Type")
 
 			// Parse form data (application/x-www-form-urlencoded or multipart/form-data)
@@ -288,27 +300,35 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 
 			// Parse JSON body (application/json)
 			if strings.HasPrefix(contentType, "application/json") {
-				buffer := bufferPool.Get().(*bytes.Buffer)
-				buffer.Reset()
-				defer bufferPool.Put(buffer)
+				// Determine max JSON size
+				maxJSONSize := int64(10 << 20) // 10MB default
 
-				if _, err := io.Copy(buffer, ctx.Request.Body); err != nil {
-					ve := getValidationError("", "failed to read request body")
+				// Check Content-Length if available for early rejection
+				if ctx.Request.ContentLength > maxJSONSize && ctx.Request.ContentLength != -1 {
+					ve := getValidationError("", "request body too large")
 					if ctx.ValidationErrs == nil {
 						ctx.ValidationErrs = make(ValidationErrors, 0, 1)
 					}
 					ctx.ValidationErrs = append(ctx.ValidationErrs, *ve)
 					putValidationError(ve)
-					ctx.JSON(http.StatusBadRequest, map[string]interface{}{"errors": ctx.ValidationErrs})
+					ctx.JSON(http.StatusRequestEntityTooLarge, map[string]interface{}{"errors": ctx.ValidationErrs})
 					return
 				}
 
-				bodyBytes := buffer.Bytes()
-				// Restore request body for downstream use
-				ctx.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				// Get buffer from pool
+				buffer := bufferPool.Get().(*bytes.Buffer)
+				buffer.Reset()
+				defer bufferPool.Put(buffer)
 
+				// Create a limited reader to prevent DoS from excessively large bodies
+				limitedBody := io.LimitReader(ctx.Request.Body, maxJSONSize)
+
+				// Use TeeReader to simultaneously read the body once while writing to buffer
+				teeBody := io.TeeReader(limitedBody, buffer)
+
+				// Parse the JSON directly from the tee reader without additional buffering
 				var body map[string]interface{}
-				if err := json.Unmarshal(bodyBytes, &body); err != nil {
+				if err := json.NewDecoder(teeBody).Decode(&body); err != nil {
 					ve := getValidationError("", "invalid JSON")
 					if ctx.ValidationErrs == nil {
 						ctx.ValidationErrs = make(ValidationErrors, 0, 1)
@@ -319,18 +339,25 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 					return
 				}
 
+				// Close original body and replace with buffered copy for downstream handlers
+				ctx.Request.Body.Close()
+				ctx.Request.Body = io.NopCloser(bytes.NewReader(buffer.Bytes()))
+
+				// Store parsed body in context
 				ctx.Values["body"] = body
 			}
-		}
 
-		// Attach validation rules to LazyFields
-		for _, chain := range chains {
-			field := ctx.Field(chain.field)                   // Get or create the LazyField
-			field.rules = append(field.rules, chain.rules...) // Append validation rules
+			// Attach validation rules to LazyFields
+			for _, chain := range chains {
+				field := ctx.Field(chain.field)                   // Get or create the LazyField
+				field.rules = append(field.rules, chain.rules...) // Append validation rules
+			}
 		}
 
 		// Proceed to the next middleware or handler
 		next()
+
+		// Return validation chains to the pool when done
 		for _, chain := range chains {
 			chain.Release()
 		}

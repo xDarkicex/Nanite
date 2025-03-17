@@ -150,8 +150,9 @@ func New() *Router {
 				MaxMessageSize: 1024 * 1024, // 1MB
 				BufferSize:     4096,
 			},
-			RouteCacheSize: 1024, // Default cache size
-			RouteMaxParams: 10,   // Default max params
+			RouteCacheSize: 1024,     // Default cache size
+			RouteMaxParams: 10,       // Default max params
+			MaxJSONSize:    10 << 20, // 10MB default
 		},
 		httpClient: &http.Client{
 			Transport: &http.Transport{
@@ -171,7 +172,7 @@ func New() *Router {
 	// Initialize context pool with pre-allocated structures
 	r.pool.New = func() interface{} {
 		return &Context{
-			Params:     [5]Param{},
+			Params:     [10]Param{},
 			Values:     make(map[string]interface{}, 8),
 			lazyFields: make(map[string]*LazyField),
 			aborted:    false,
