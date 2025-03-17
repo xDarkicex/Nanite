@@ -412,31 +412,35 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 
 // ServeHTTP implements the http.Handler interface for the router.
 // It processes incoming HTTP requests by:
-//  1. Setting up response tracking and buffering
-//  2. Retrieving a pooled Context for the request
-//  3. Monitoring for context cancellation and timeouts
-//  4. Finding the appropriate handler for the request path
-//  5. Executing the middleware/handler pipeline
-//  6. Handling any panics or errors during processing
-//  7. Ensuring all resources are properly released
+// 1. Setting up response tracking and buffering
+// 2. Retrieving a pooled Context for the request
+// 3. Monitoring for context cancellation and timeouts
+// 4. Finding the appropriate handler for the request path
+// 5. Executing the middleware/handler pipeline
+// 6. Handling any panics or errors during processing
+// 7. Ensuring all resources are properly released
 //
 // The implementation is optimized for high throughput with minimal allocations
 // by using object pooling, buffered writes, and direct middleware references.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Initialize response writer chain with tracking and buffering
 	trackedWriter := WrapResponseWriter(w)
-	bufferedWriter := newBufferedResponseWriter(trackedWriter, 4096)
+
+	// Get content type from response headers or request Accept header
+	contentType := w.Header().Get("Content-Type")
+	if contentType == "" {
+		contentType = req.Header.Get("Accept")
+		if contentType == "" || contentType == "*/*" {
+			contentType = "text/plain" // Default assumption
+		}
+	}
+
+	bufferedWriter := newBufferedResponseWriter(trackedWriter, contentType, r.config)
 	defer bufferedWriter.Close()
 
-	// Get a context from the pool and initialize it for this request
+	// Get a context from the pool and initialize it with a single Reset call
 	ctx := r.pool.Get().(*Context)
-	ctx.Writer = bufferedWriter
-	ctx.Request = req
-	ctx.ParamsCount = 0 // Reset params count
-	ctx.ClearValues()
-	ctx.ClearLazyFields()
-	ctx.ValidationErrs = nil
-	ctx.aborted = false
+	ctx.Reset(bufferedWriter, req)
 
 	// Ensure context is returned to pool when done
 	defer func() {
@@ -449,7 +453,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if reqCtx.Done() != nil {
 		finished := make(chan struct{})
 		defer close(finished)
-
 		go func() {
 			select {
 			case <-reqCtx.Done():
@@ -518,7 +521,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		} else {
 			http.NotFound(trackedWriter, req)
 		}
-		bufferedWriter.Close()
 	}
 
 	// Ensure the buffered writer is closed and flushed
