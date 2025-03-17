@@ -69,12 +69,16 @@ func (ve ValidationErrors) Error() string {
 
 // Config holds configuration options for the router.
 type Config struct {
-	NotFoundHandler HandlerFunc           // Handler for 404 responses
-	ErrorHandler    func(*Context, error) // Custom error handler
-	Upgrader        *websocket.Upgrader   // WebSocket upgrader configuration
-	WebSocket       *WebSocketConfig      // WebSocket-specific settings
-	RouteCacheSize  int                   // Add this field
-	RouteMaxParams  int                   // Add this field
+	NotFoundHandler   HandlerFunc           // Handler for 404 responses
+	ErrorHandler      func(*Context, error) // Custom error handler
+	Upgrader          *websocket.Upgrader   // WebSocket upgrader configuration
+	WebSocket         *WebSocketConfig      // WebSocket-specific settings
+	RouteCacheSize    int                   // Size of the route cache
+	RouteMaxParams    int                   // Maximum number of parameters per route
+	DefaultBufferSize int                   // Default buffer size for responses
+	TextBufferSize    int                   // Buffer size for text-based content types
+	BinaryBufferSize  int                   // Buffer size for binary content types
+	AdaptiveBuffering bool                  // Enable/disable adaptive buffering
 }
 
 // WebSocketConfig holds configuration options for WebSocket connections.

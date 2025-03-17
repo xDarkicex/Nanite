@@ -822,6 +822,13 @@ func (r *Router) SetRouteCacheOptions(size, maxParams int) {
 // Buffered Response Writer
 //------------------------------------------------------------------------------
 
+// Buffer size constants for different content types
+const (
+	DefaultBufferSize = 4096 // Default buffer size for most content types
+	TextBufferSize    = 2048 // Smaller buffer size for text-based content for faster flushing
+	BinaryBufferSize  = 8192 // Larger buffer size for binary content to minimize syscalls
+)
+
 // BufferedResponseWriter wraps TrackedResponseWriter with a buffer
 type BufferedResponseWriter struct {
 	*TrackedResponseWriter
@@ -830,20 +837,136 @@ type BufferedResponseWriter struct {
 	autoFlush  bool
 }
 
-// newBufferedResponseWriter creates a new BufferedResponseWriter
-func newBufferedResponseWriter(w *TrackedResponseWriter, bufferSize int) *BufferedResponseWriter {
-	return &BufferedResponseWriter{
-		TrackedResponseWriter: w,
-		buffer:                bufferPool.Get().(*bytes.Buffer),
-		bufferSize:            bufferSize,
-		autoFlush:             true,
-	}
+
+const (
+    DefaultBufferSize = 4096 // Default buffer size for most content types
+    TextBufferSize    = 2048 // Smaller buffer size for text-based content for faster flushing
+    BinaryBufferSize  = 8192 // Larger buffer size for binary content to minimize syscalls
+)
+
+// contentTypeMatch checks if content type matches a specific prefix without allocations
+func contentTypeMatch(contentType []byte, prefix []byte) bool {
+    if len(contentType) < len(prefix) {
+        return false
+    }
+    
+    for i := 0; i < len(prefix); i++ {
+        if contentType[i] != prefix[i] {
+            return false
+        }
+    }
+    return true
 }
 
-// Write buffers the data and flushes when buffer exceeds size
+// stripContentParams strips content type parameters without allocations
+// Example: "text/html; charset=utf-8" → "text/html"
+func stripContentParams(contentType []byte) []byte {
+    for i := 0; i < len(contentType); i++ {
+        if contentType[i] == ';' {
+            return contentType[:i]
+        }
+    }
+    return contentType
+}
+
+// newBufferedResponseWriter creates a new BufferedResponseWriter with content-aware buffering.
+// It optimizes the buffer size based on the content type:
+//   - Text-based content (text/*, application/json): Smaller buffers for faster initial flush
+//   - Binary content (image/*, video/*, application/octet-stream): Larger buffers to minimize syscalls
+//   - Other content types: Default buffer size
+//
+// If a config is provided with explicit buffer sizes, those will be used instead of the defaults.
+//
+// Parameters:
+//   - w: The TrackedResponseWriter to wrap
+//   - contentType: The MIME type of the response content
+//   - config: Router configuration containing buffer size settings
+//
+// Returns:
+//   - A new BufferedResponseWriter configured with an appropriate buffer size
+func newBufferedResponseWriter(w *TrackedResponseWriter, contentType string, config *Config) *BufferedResponseWriter {
+    // Get buffer from pool and ensure it's empty
+    buffer := bufferPool.Get().(*bytes.Buffer)
+    buffer.Reset()
+    
+    // Convert to byte slice once instead of multiple string operations
+    contentTypeBytes := []byte(contentType)
+    
+    // Strip content type parameters without allocations
+    contentTypeBytes = stripContentParams(contentTypeBytes)
+    
+    // Define common content type prefixes as byte slices to avoid repeat conversions
+    var textPrefix = []byte("text/")
+    var jsonPrefix = []byte("application/json")
+    var xmlPrefix = []byte("application/xml")
+    var jsPrefix = []byte("application/javascript")
+    var formPrefix = []byte("application/x-www-form-urlencoded")
+    
+    var imagePrefix = []byte("image/")
+    var videoPrefix = []byte("video/")
+    var audioPrefix = []byte("audio/")
+    var octetPrefix = []byte("application/octet-stream")
+    var pdfPrefix = []byte("application/pdf")
+    var zipPrefix = []byte("application/zip")
+    
+    // Determine buffer size from content type without allocations
+    var bufferSize int
+    
+    // Fast path for empty content type
+    if len(contentTypeBytes) == 0 {
+        bufferSize = config != nil && config.DefaultBufferSize > 0 ? 
+            config.DefaultBufferSize : DefaultBufferSize
+    } else if contentTypeMatch(contentTypeBytes, textPrefix) || 
+              contentTypeMatch(contentTypeBytes, jsonPrefix) ||
+              contentTypeMatch(contentTypeBytes, xmlPrefix) ||
+              contentTypeMatch(contentTypeBytes, jsPrefix) ||
+              contentTypeMatch(contentTypeBytes, formPrefix) {
+        // Text content - use smaller buffer for faster flushing
+        bufferSize = config != nil && config.TextBufferSize > 0 ? 
+            config.TextBufferSize : TextBufferSize
+    } else if contentTypeMatch(contentTypeBytes, imagePrefix) || 
+              contentTypeMatch(contentTypeBytes, videoPrefix) || 
+              contentTypeMatch(contentTypeBytes, audioPrefix) ||
+              contentTypeMatch(contentTypeBytes, octetPrefix) ||
+              contentTypeMatch(contentTypeBytes, pdfPrefix) ||
+              contentTypeMatch(contentTypeBytes, zipPrefix) {
+        // Binary content - use larger buffer to minimize syscalls
+        bufferSize = config != nil && config.BinaryBufferSize > 0 ? 
+            config.BinaryBufferSize : BinaryBufferSize
+    } else {
+        // Default for unknown content types
+        bufferSize = config != nil && config.DefaultBufferSize > 0 ? 
+            config.DefaultBufferSize : DefaultBufferSize
+    }
+    
+    return &BufferedResponseWriter{
+        TrackedResponseWriter: w,
+        buffer:               buffer,
+        bufferSize:           bufferSize,
+        autoFlush:            true,
+    }
+}
+// Write buffers the data and uses adaptive flushing based on content type and buffer fullness
 func (w *BufferedResponseWriter) Write(b []byte) (int, error) {
 	if !w.headerWritten {
 		w.WriteHeader(http.StatusOK)
+	}
+
+	// Get current content type after headers are written
+	contentType := w.Header().Get("Content-Type")
+	isTextBased := strings.HasPrefix(contentType, "text/") ||
+		strings.HasPrefix(contentType, "application/json") ||
+		strings.HasPrefix(contentType, "application/xml")
+
+	// For large writes that exceed buffer, write directly to avoid double copying
+	if len(b) > w.bufferSize*2 {
+		// Flush any existing buffered data first
+		if w.buffer.Len() > 0 {
+			w.Flush()
+		}
+		n, err := w.TrackedResponseWriter.Write(b)
+		w.bytesWritten += int64(n)
+		return n, err
 	}
 
 	// If this write would exceed buffer size, flush first
@@ -854,9 +977,17 @@ func (w *BufferedResponseWriter) Write(b []byte) (int, error) {
 	n, err := w.buffer.Write(b)
 	w.bytesWritten += int64(n)
 
-	// Auto-flush if enabled
-	if w.autoFlush && w.buffer.Len() >= w.bufferSize {
-		w.Flush()
+	// Adaptive flushing strategy based on content type
+	if w.autoFlush {
+		bufferFullness := float64(w.buffer.Len()) / float64(w.bufferSize)
+
+		// For text-based content, flush earlier for better perceived performance
+		if isTextBased && bufferFullness >= 0.7 {
+			w.Flush()
+		} else if !isTextBased && w.buffer.Len() >= w.bufferSize {
+			// For binary content, wait until buffer is completely full
+			w.Flush()
+		}
 	}
 
 	return n, err
