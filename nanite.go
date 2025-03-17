@@ -407,13 +407,24 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 }
 
 // ServeHTTP implements the http.Handler interface for the router.
+// It processes incoming HTTP requests by:
+//  1. Setting up response tracking and buffering
+//  2. Retrieving a pooled Context for the request
+//  3. Monitoring for context cancellation and timeouts
+//  4. Finding the appropriate handler for the request path
+//  5. Executing the middleware/handler pipeline
+//  6. Handling any panics or errors during processing
+//  7. Ensuring all resources are properly released
+//
+// The implementation is optimized for high throughput with minimal allocations
+// by using object pooling, buffered writes, and direct middleware references.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// Wrap the response writer to track if headers have been sent
+	// Initialize response writer chain with tracking and buffering
 	trackedWriter := WrapResponseWriter(w)
 	bufferedWriter := newBufferedResponseWriter(trackedWriter, 4096)
 	defer bufferedWriter.Close()
 
-	// Get a context from the pool
+	// Get a context from the pool and initialize it for this request
 	ctx := r.pool.Get().(*Context)
 	ctx.Writer = bufferedWriter
 	ctx.Request = req
@@ -429,10 +440,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.pool.Put(ctx)
 	}()
 
-	// Use the request's context for detecting cancellation and timeouts
+	// Set up context cancellation monitoring
 	reqCtx := req.Context()
-
-	// Set up a goroutine to monitor for cancellation if the context can be canceled
 	if reqCtx.Done() != nil {
 		finished := make(chan struct{})
 		defer close(finished)
@@ -454,9 +463,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}()
 	}
 
-	// Find the appropriate handler
+	// Route lookup: find the appropriate handler and parameters
 	handler, params := r.findHandlerAndMiddleware(req.Method, req.URL.Path)
 	if handler == nil {
+		// Handle 404 Not Found
 		if r.config.NotFoundHandler != nil {
 			r.config.NotFoundHandler(ctx)
 		} else {
@@ -466,7 +476,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Set parameters to context
+	// Copy route parameters to context's fixed-size array
 	for i, p := range params {
 		if i < len(ctx.Params) {
 			ctx.Params[i] = p
@@ -474,7 +484,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	ctx.ParamsCount = len(params)
 
-	// Capture panics from handlers
+	// Set up panic recovery
 	defer func() {
 		if err := recover(); err != nil {
 			ctx.Abort()
@@ -490,11 +500,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			bufferedWriter.Close()
 		}
 	}()
-	// Execute the handler with middleware
+
+	// Execute the middleware chain with the final handler
+	// Using direct middleware reference without cloning for better performance
 	r.mutex.RLock()
 	executeMiddlewareChain(ctx, handler, r.middleware)
 	r.mutex.RUnlock()
 
+	// Handle aborted requests that haven't written a response
 	if ctx.IsAborted() && !trackedWriter.Written() {
 		if r.config.NotFoundHandler != nil {
 			r.config.NotFoundHandler(ctx)
@@ -503,6 +516,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		bufferedWriter.Close()
 	}
+
+	// Ensure the buffered writer is closed and flushed
 	bufferedWriter.Close()
 }
 
