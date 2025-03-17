@@ -837,42 +837,35 @@ type BufferedResponseWriter struct {
 	autoFlush  bool
 }
 
-
-const (
-    DefaultBufferSize = 4096 // Default buffer size for most content types
-    TextBufferSize    = 2048 // Smaller buffer size for text-based content for faster flushing
-    BinaryBufferSize  = 8192 // Larger buffer size for binary content to minimize syscalls
-)
-
 // contentTypeMatch checks if content type matches a specific prefix without allocations
 func contentTypeMatch(contentType []byte, prefix []byte) bool {
-    if len(contentType) < len(prefix) {
-        return false
-    }
-    
-    for i := 0; i < len(prefix); i++ {
-        if contentType[i] != prefix[i] {
-            return false
-        }
-    }
-    return true
+	if len(contentType) < len(prefix) {
+		return false
+	}
+
+	for i := 0; i < len(prefix); i++ {
+		if contentType[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // stripContentParams strips content type parameters without allocations
 // Example: "text/html; charset=utf-8" → "text/html"
 func stripContentParams(contentType []byte) []byte {
-    for i := 0; i < len(contentType); i++ {
-        if contentType[i] == ';' {
-            return contentType[:i]
-        }
-    }
-    return contentType
+	for i := 0; i < len(contentType); i++ {
+		if contentType[i] == ';' {
+			return contentType[:i]
+		}
+	}
+	return contentType
 }
 
 // newBufferedResponseWriter creates a new BufferedResponseWriter with content-aware buffering.
 // It optimizes the buffer size based on the content type:
-//   - Text-based content (text/*, application/json): Smaller buffers for faster initial flush
-//   - Binary content (image/*, video/*, application/octet-stream): Larger buffers to minimize syscalls
+//   - Text-based content (text/*, application/json, etc.): Smaller buffers for faster initial flush
+//   - Binary content (image/*, video/*, etc.): Larger buffers to minimize syscalls
 //   - Other content types: Default buffer size
 //
 // If a config is provided with explicit buffer sizes, those will be used instead of the defaults.
@@ -885,67 +878,80 @@ func stripContentParams(contentType []byte) []byte {
 // Returns:
 //   - A new BufferedResponseWriter configured with an appropriate buffer size
 func newBufferedResponseWriter(w *TrackedResponseWriter, contentType string, config *Config) *BufferedResponseWriter {
-    // Get buffer from pool and ensure it's empty
-    buffer := bufferPool.Get().(*bytes.Buffer)
-    buffer.Reset()
-    
-    // Convert to byte slice once instead of multiple string operations
-    contentTypeBytes := []byte(contentType)
-    
-    // Strip content type parameters without allocations
-    contentTypeBytes = stripContentParams(contentTypeBytes)
-    
-    // Define common content type prefixes as byte slices to avoid repeat conversions
-    var textPrefix = []byte("text/")
-    var jsonPrefix = []byte("application/json")
-    var xmlPrefix = []byte("application/xml")
-    var jsPrefix = []byte("application/javascript")
-    var formPrefix = []byte("application/x-www-form-urlencoded")
-    
-    var imagePrefix = []byte("image/")
-    var videoPrefix = []byte("video/")
-    var audioPrefix = []byte("audio/")
-    var octetPrefix = []byte("application/octet-stream")
-    var pdfPrefix = []byte("application/pdf")
-    var zipPrefix = []byte("application/zip")
-    
-    // Determine buffer size from content type without allocations
-    var bufferSize int
-    
-    // Fast path for empty content type
-    if len(contentTypeBytes) == 0 {
-        bufferSize = config != nil && config.DefaultBufferSize > 0 ? 
-            config.DefaultBufferSize : DefaultBufferSize
-    } else if contentTypeMatch(contentTypeBytes, textPrefix) || 
-              contentTypeMatch(contentTypeBytes, jsonPrefix) ||
-              contentTypeMatch(contentTypeBytes, xmlPrefix) ||
-              contentTypeMatch(contentTypeBytes, jsPrefix) ||
-              contentTypeMatch(contentTypeBytes, formPrefix) {
-        // Text content - use smaller buffer for faster flushing
-        bufferSize = config != nil && config.TextBufferSize > 0 ? 
-            config.TextBufferSize : TextBufferSize
-    } else if contentTypeMatch(contentTypeBytes, imagePrefix) || 
-              contentTypeMatch(contentTypeBytes, videoPrefix) || 
-              contentTypeMatch(contentTypeBytes, audioPrefix) ||
-              contentTypeMatch(contentTypeBytes, octetPrefix) ||
-              contentTypeMatch(contentTypeBytes, pdfPrefix) ||
-              contentTypeMatch(contentTypeBytes, zipPrefix) {
-        // Binary content - use larger buffer to minimize syscalls
-        bufferSize = config != nil && config.BinaryBufferSize > 0 ? 
-            config.BinaryBufferSize : BinaryBufferSize
-    } else {
-        // Default for unknown content types
-        bufferSize = config != nil && config.DefaultBufferSize > 0 ? 
-            config.DefaultBufferSize : DefaultBufferSize
-    }
-    
-    return &BufferedResponseWriter{
-        TrackedResponseWriter: w,
-        buffer:               buffer,
-        bufferSize:           bufferSize,
-        autoFlush:            true,
-    }
+	// Get buffer from pool and ensure it's empty
+	buffer := bufferPool.Get().(*bytes.Buffer)
+	buffer.Reset()
+
+	// Convert to byte slice once instead of multiple string operations
+	contentTypeBytes := []byte(contentType)
+
+	// Strip content type parameters without allocations
+	contentTypeBytes = stripContentParams(contentTypeBytes)
+
+	// Define common content type prefixes as byte slices to avoid repeat conversions
+	var textPrefix = []byte("text/")
+	var jsonPrefix = []byte("application/json")
+	var xmlPrefix = []byte("application/xml")
+	var jsPrefix = []byte("application/javascript")
+	var formPrefix = []byte("application/x-www-form-urlencoded")
+
+	var imagePrefix = []byte("image/")
+	var videoPrefix = []byte("video/")
+	var audioPrefix = []byte("audio/")
+	var octetPrefix = []byte("application/octet-stream")
+	var pdfPrefix = []byte("application/pdf")
+	var zipPrefix = []byte("application/zip")
+
+	// Determine buffer size from content type without allocations
+	var bufferSize int
+
+	// Fast path for empty content type
+	if len(contentTypeBytes) == 0 {
+		if config != nil && config.DefaultBufferSize > 0 {
+			bufferSize = config.DefaultBufferSize
+		} else {
+			bufferSize = DefaultBufferSize
+		}
+	} else if contentTypeMatch(contentTypeBytes, textPrefix) ||
+		contentTypeMatch(contentTypeBytes, jsonPrefix) ||
+		contentTypeMatch(contentTypeBytes, xmlPrefix) ||
+		contentTypeMatch(contentTypeBytes, jsPrefix) ||
+		contentTypeMatch(contentTypeBytes, formPrefix) {
+		// Text content - use smaller buffer for faster flushing
+		if config != nil && config.TextBufferSize > 0 {
+			bufferSize = config.TextBufferSize
+		} else {
+			bufferSize = TextBufferSize
+		}
+	} else if contentTypeMatch(contentTypeBytes, imagePrefix) ||
+		contentTypeMatch(contentTypeBytes, videoPrefix) ||
+		contentTypeMatch(contentTypeBytes, audioPrefix) ||
+		contentTypeMatch(contentTypeBytes, octetPrefix) ||
+		contentTypeMatch(contentTypeBytes, pdfPrefix) ||
+		contentTypeMatch(contentTypeBytes, zipPrefix) {
+		// Binary content - use larger buffer to minimize syscalls
+		if config != nil && config.BinaryBufferSize > 0 {
+			bufferSize = config.BinaryBufferSize
+		} else {
+			bufferSize = BinaryBufferSize
+		}
+	} else {
+		// Default for unknown content types
+		if config != nil && config.DefaultBufferSize > 0 {
+			bufferSize = config.DefaultBufferSize
+		} else {
+			bufferSize = DefaultBufferSize
+		}
+	}
+
+	return &BufferedResponseWriter{
+		TrackedResponseWriter: w,
+		buffer:                buffer,
+		bufferSize:            bufferSize,
+		autoFlush:             true,
+	}
 }
+
 // Write buffers the data and uses adaptive flushing based on content type and buffer fullness
 func (w *BufferedResponseWriter) Write(b []byte) (int, error) {
 	if !w.headerWritten {
@@ -1025,13 +1031,13 @@ func (w *BufferedResponseWriter) Close() {
 // After Close is called, the BufferedResponseWriter should not be used again.
 // Multiple calls to Close are safe and subsequent calls have no effect.
 func (w *BufferedResponseWriter) Close() {
-    if w == nil {
-        return
-    }
+	if w == nil {
+		return
+	}
 
-    if w.buffer != nil {
-        w.Flush()
-        bufferPool.Put(w.buffer)
-        w.buffer = nil
-    }
+	if w.buffer != nil {
+		w.Flush()
+		bufferPool.Put(w.buffer)
+		w.buffer = nil
+	}
 }
