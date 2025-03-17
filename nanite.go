@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+
 	"strings"
 	"sync"
 	"time"
@@ -244,7 +245,7 @@ func (r *Router) Start(port string) error {
 		Addr:           ":" + port,
 		Handler:        r,
 		ReadTimeout:    5 * time.Second,
-		WriteTimeout:   5 * time.Second,
+		WriteTimeout:   60 * time.Second,
 		IdleTimeout:    60 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1MB
 		ConnState: func(conn net.Conn, state http.ConnState) {
@@ -353,7 +354,12 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 }
 
 // findHandlerAndMiddleware finds the handler and parameters for a given method and path.
-// It uses a fast path for static routes and falls back to trie traversal for dynamic routes.
+// It employs a three-tier lookup strategy for optimal performance:
+//  1. Fast path: O(1) lookup for static routes via map
+//  2. LRU cache: Recently used dynamic routes
+//  3. Radix tree: Full path matching for dynamic routes
+//
+// The function returns the matched handler and route parameters.
 func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []Param) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
@@ -365,14 +371,17 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 		}
 	}
 
-	// Check LRU cache before doing the more expensive radix tree lookup
+	// Second tier: check LRU cache before doing the more expensive radix tree lookup
+	// This avoids the cost of tree traversal for frequently used dynamic routes
 	if r.routeCache != nil {
 		if handler, params, found := r.routeCache.Get(method, path); found {
+			// Cache hit - strings are interned and params are pooled for efficiency
 			return handler, params
 		}
+		// Cache miss is tracked internally by the LRU implementation
 	}
 
-	// Use radix tree for dynamic routes
+	// Third tier: use radix tree for dynamic routes
 	if tree, exists := r.trees[method]; exists {
 		// Use an empty params slice that we'll populate
 		params := make([]Param, 0, 5)
@@ -384,7 +393,8 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 
 		handler, params := tree.findRoute(searchPath, params)
 
-		// Cache successful lookups
+		// Cache successful lookups to speed up future requests
+		// The LRU handles memory management, parameter pooling, and string interning
 		if handler != nil && r.routeCache != nil {
 			r.routeCache.Add(method, path, handler, params)
 		}
@@ -392,6 +402,7 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 		return handler, params
 	}
 
+	// No matching route found
 	return nil, nil
 }
 
