@@ -150,9 +150,8 @@ func New() *Router {
 				MaxMessageSize: 1024 * 1024, // 1MB
 				BufferSize:     4096,
 			},
-			RouteCacheSize: 1024,     // Default cache size
-			RouteMaxParams: 10,       // Default max params
-			MaxJSONSize:    10 << 20, // 10MB default
+			RouteCacheSize: 1024, // Default cache size
+			RouteMaxParams: 10,   // Default max params
 		},
 		httpClient: &http.Client{
 			Transport: &http.Transport{
@@ -531,6 +530,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // ### Helper Types and Functions
 
 // longestCommonPrefix finds the longest common prefix of two strings
+//
+//go:inline
 func longestCommonPrefix(a, b string) int {
 	max := len(a)
 	if len(b) < max {

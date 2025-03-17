@@ -11,11 +11,15 @@ import (
 // ### Context Methods
 
 // Set stores a value in the context's value map.
+//
+//go:inline
 func (c *Context) Set(key string, value interface{}) {
 	c.Values[key] = value
 }
 
 // Get retrieves a value from the context's value map.
+//
+//go:inline
 func (c *Context) Get(key string) interface{} {
 	if c.Values != nil {
 		return c.Values[key]
@@ -42,6 +46,8 @@ func (c *Context) Query(key string) string {
 }
 
 // GetParam retrieves a route parameter by key, including wildcard (*).
+//
+//go:inline
 func (c *Context) GetParam(key string) (string, bool) {
 	for i := 0; i < c.ParamsCount; i++ {
 		if c.Params[i].Key == key {
@@ -149,6 +155,8 @@ func (c *Context) Abort() {
 }
 
 // IsAborted checks if the request has been aborted.
+//
+//go:inline
 func (c *Context) IsAborted() bool {
 	return c.aborted
 }

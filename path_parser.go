@@ -61,6 +61,8 @@ func (p *PathParser) Count() int {
 }
 
 // Part returns the path segment at the given index
+//
+//go:inline
 func (p *PathParser) Part(index int) string {
 	if index < 0 || index >= int(p.partsUsed) {
 		return ""
@@ -70,6 +72,8 @@ func (p *PathParser) Part(index int) string {
 }
 
 // IsParam returns true if the path segment at the given index is a parameter
+//
+//go:inline
 func (p *PathParser) IsParam(index int) bool {
 	if index < 0 || index >= int(p.partsUsed) {
 		return false
@@ -79,6 +83,8 @@ func (p *PathParser) IsParam(index int) bool {
 }
 
 // IsWildcard returns true if the path segment at the given index is a wildcard
+//
+//go:inline
 func (p *PathParser) IsWildcard(index int) bool {
 	if index < 0 || index >= int(p.partsUsed) {
 		return false

@@ -39,6 +39,8 @@ type ValidationChain struct {
 // ### Validation Support
 
 // IsObject adds a rule that the field must be a JSON object.
+//
+//go:inline
 func (vc *ValidationChain) IsObject() *ValidationChain {
 	// Pre-allocate the error
 	errObj := getValidationError(vc.field, "must be an object")
@@ -261,6 +263,8 @@ func (vc *ValidationChain) IsBoolean() *ValidationChain {
 }
 
 // IsFloat adds a rule that the field must be a floating-point number.
+//
+//go:inline
 func (vc *ValidationChain) IsFloat() *ValidationChain {
 	// Pre-allocate the error
 	errObj := getValidationError(vc.field, errMustBeNumber)
@@ -281,6 +285,8 @@ func (vc *ValidationChain) IsFloat() *ValidationChain {
 }
 
 // IsInt adds a rule that the field must be an integer.
+//
+//go:inline
 func (vc *ValidationChain) IsInt() *ValidationChain {
 	// Pre-allocate the error
 	errObj := getValidationError(vc.field, "must be an integer")
@@ -301,6 +307,8 @@ func (vc *ValidationChain) IsInt() *ValidationChain {
 }
 
 // IsEmail adds a rule that the field must be a valid email address.
+//
+//go:inline
 func (vc *ValidationChain) IsEmail() *ValidationChain {
 	// Pre-allocate the error
 	errObj := getValidationError(vc.field, "invalid email format")
@@ -321,6 +329,8 @@ func (vc *ValidationChain) IsEmail() *ValidationChain {
 }
 
 // Required adds a rule that the field must not be empty.
+//
+//go:inline
 func (vc *ValidationChain) Required() *ValidationChain {
 	errObj := getValidationError(vc.field, errRequired)
 	vc.preAllocatedErrors = append(vc.preAllocatedErrors, errObj)

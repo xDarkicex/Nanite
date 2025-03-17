@@ -195,6 +195,8 @@ func (g *Group) Use(middleware ...MiddlewareFunc) {
 //
 // Returns:
 //   - string: The normalized path
+//
+//go:inline
 func normalizePath(path string) string {
 	// Fast path for empty string
 	if path == "" {
@@ -365,6 +367,8 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 }
 
 // ExecuteMiddleware executes the middleware chain for a route
+//
+//go:inline
 func executeMiddlewareChain(c *Context, handler HandlerFunc, middleware []MiddlewareFunc) {
 	// No middleware, just execute the handler
 	if len(middleware) == 0 {
@@ -450,6 +454,8 @@ func (w *TrackedResponseWriter) Unwrap() http.ResponseWriter {
 }
 
 // Flush implements http.Flusher interface if the underlying writer supports it.
+//
+//go:inline
 func (w *TrackedResponseWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
@@ -537,6 +543,8 @@ var paramSlicePools = [5]sync.Pool{
 // getParamSlice retrieves a parameter slice from the appropriate pool based on paramCount.
 // This function optimizes memory usage by selecting a pool with an appropriate capacity
 // for the requested number of parameters.
+//
+//go:inline
 func getParamSlice(paramCount int) []Param {
 	if paramCount <= 4 {
 		return paramSlicePools[0].Get().([]Param)[:0]
@@ -554,6 +562,8 @@ func getParamSlice(paramCount int) []Param {
 // putParamSlice returns a parameter slice to the appropriate pool based on its capacity.
 // This function recycles parameter slices to reduce garbage collection overhead.
 // Slices with capacities that don't match a pool are left for the garbage collector.
+//
+//go:inline
 func putParamSlice(s []Param) {
 	cap := cap(s)
 	if cap == 4 {
@@ -583,6 +593,8 @@ var stringInterner = struct {
 // If the string has been seen before, the stored version is returned.
 // Otherwise, the input string becomes the canonical version.
 // This reduces memory usage when the same strings are frequently used.
+//
+//go:inline
 func internString(s string) string {
 	stringInterner.RLock()
 	if interned, ok := stringInterner.m[s]; ok {
@@ -865,6 +877,8 @@ type BufferedResponseWriter struct {
 }
 
 // contentTypeMatch checks if content type matches a specific prefix without allocations
+//
+//go:inline
 func contentTypeMatch(contentType []byte, prefix []byte) bool {
 	if len(contentType) < len(prefix) {
 		return false
@@ -880,6 +894,8 @@ func contentTypeMatch(contentType []byte, prefix []byte) bool {
 
 // stripContentParams strips content type parameters without allocations
 // Example: "text/html; charset=utf-8" → "text/html"
+//
+//go:inline
 func stripContentParams(contentType []byte) []byte {
 	for i := 0; i < len(contentType); i++ {
 		if contentType[i] == ';' {
