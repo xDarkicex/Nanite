@@ -332,3 +332,55 @@ func (c *Context) ClearLazyFields() {
 		delete(c.lazyFields, k)
 	}
 }
+
+// Error stores an error in the context and aborts the current request
+func (c *Context) Error(err error) {
+	c.Values["error"] = err
+	c.Abort()
+}
+
+// GetError retrieves the current error from the context
+func (c *Context) GetError() error {
+	if err, ok := c.Values["error"].(error); ok {
+		return err
+	}
+	return nil
+}
+
+// executeErrorMiddlewareChain executes the chain of error middleware functions.
+// It creates a recursive closure that proceeds through the middleware stack.
+//
+// Parameters:
+//   - err: The error being handled
+//   - c: The request context
+//   - middleware: Slice of error middleware functions to execute
+func executeErrorMiddlewareChain(err error, c *Context, middleware []ErrorMiddlewareFunc) {
+	var index int
+	var next func()
+
+	next = func() {
+		if index < len(middleware) {
+			currentMiddleware := middleware[index]
+			index++
+			currentMiddleware(err, c, next)
+		}
+	}
+
+	index = 0
+	next()
+}
+
+// UseError adds one or more error middleware functions to the router's error middleware stack.
+// These middleware functions will be executed when an error occurs during request processing.
+//
+// Parameters:
+//   - middleware: One or more ErrorMiddlewareFunc functions to execute when errors occur
+//
+// Returns:
+//   - *Router: The router instance for method chaining
+func (r *Router) UseError(middleware ...ErrorMiddlewareFunc) *Router {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.errorMiddleware = append(r.errorMiddleware, middleware...)
+	return r
+}

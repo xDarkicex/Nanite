@@ -1,7 +1,11 @@
 package nanite
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -361,4 +365,132 @@ func (vc *ValidationChain) Release() {
 	vc.preAllocatedErrors = vc.preAllocatedErrors[:0]
 	vc.rules = vc.rules[:0]
 	putValidationChain(vc)
+}
+
+// JSONParsingConfig provides configuration options for the JSONParsingMiddleware
+type JSONParsingConfig struct {
+	MaxSize        int64                 // Maximum allowed size for JSON request bodies
+	ErrorHandler   func(*Context, error) // Custom error handler for parsing errors
+	TargetKey      string                // Context key where parsed JSON is stored (default: "body")
+	RequireJSON    bool                  // Require all requests to have application/json content type
+	AllowEmptyBody bool                  // Allow empty request bodies (results in empty object)
+}
+
+// DefaultJSONConfig returns a default configuration for JSON parsing middleware
+func DefaultJSONConfig() JSONParsingConfig {
+	return JSONParsingConfig{
+		MaxSize:        10 << 20, // 10MB
+		TargetKey:      "body",
+		RequireJSON:    false,
+		AllowEmptyBody: true,
+	}
+}
+
+// JSONParsingMiddleware creates middleware that parses JSON request bodies.
+// It uses an optimized io.TeeReader approach to parse the body without
+// consuming it, making it available for downstream handlers.
+//
+// Parameters:
+//   - config: Optional configuration for the middleware. If nil, defaults are used.
+//
+// Returns:
+//   - MiddlewareFunc: Middleware function that can be registered with the router
+func JSONParsingMiddleware(config *JSONParsingConfig) MiddlewareFunc {
+	// Use default config if none provided
+	cfg := DefaultJSONConfig()
+	if config != nil {
+		cfg = *config
+	}
+
+	return func(ctx *Context, next func()) {
+		if ctx.IsAborted() {
+			return
+		}
+
+		// Check if we need to process this request
+		contentType := ctx.Request.Header.Get("Content-Type")
+		isJSON := strings.HasPrefix(contentType, "application/json")
+
+		if !isJSON {
+			if cfg.RequireJSON {
+				// If JSON is required but content-type is not JSON, abort
+				if cfg.ErrorHandler != nil {
+					cfg.ErrorHandler(ctx, fmt.Errorf("content type must be application/json"))
+				} else {
+					ctx.JSON(http.StatusUnsupportedMediaType, map[string]interface{}{
+						"error": "content type must be application/json",
+					})
+				}
+				return
+			}
+			// If JSON is not required and content-type is not JSON, skip parsing
+			next()
+			return
+		}
+
+		// Check Content-Length if available for early rejection
+		if ctx.Request.ContentLength > cfg.MaxSize && ctx.Request.ContentLength != -1 {
+			if cfg.ErrorHandler != nil {
+				cfg.ErrorHandler(ctx, fmt.Errorf("request body too large"))
+			} else {
+				ctx.JSON(http.StatusRequestEntityTooLarge, map[string]interface{}{
+					"error": "request body too large",
+				})
+			}
+			return
+		}
+
+		// Get buffer from pool
+		buffer := bufferPool.Get().(*bytes.Buffer)
+		buffer.Reset()
+		defer bufferPool.Put(buffer)
+
+		// Handle empty bodies
+		if ctx.Request.ContentLength == 0 {
+			if cfg.AllowEmptyBody {
+				// Use an empty object for empty bodies
+				ctx.Values[cfg.TargetKey] = make(map[string]interface{})
+				next()
+				return
+			} else {
+				if cfg.ErrorHandler != nil {
+					cfg.ErrorHandler(ctx, fmt.Errorf("empty request body not allowed"))
+				} else {
+					ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+						"error": "empty request body not allowed",
+					})
+				}
+				return
+			}
+		}
+
+		// Create a limited reader to prevent DoS from excessively large bodies
+		limitedBody := io.LimitReader(ctx.Request.Body, cfg.MaxSize)
+
+		// Use TeeReader to simultaneously read the body once while writing to buffer
+		teeBody := io.TeeReader(limitedBody, buffer)
+
+		// Parse the JSON directly from the tee reader
+		var body map[string]interface{}
+		if err := json.NewDecoder(teeBody).Decode(&body); err != nil {
+			if cfg.ErrorHandler != nil {
+				cfg.ErrorHandler(ctx, err)
+			} else {
+				ctx.JSON(http.StatusBadRequest, map[string]interface{}{
+					"error": "invalid JSON: " + err.Error(),
+				})
+			}
+			return
+		}
+
+		// Close original body and replace with buffered copy for downstream handlers
+		ctx.Request.Body.Close()
+		ctx.Request.Body = io.NopCloser(bytes.NewReader(buffer.Bytes()))
+
+		// Store parsed body in context with the configured key
+		ctx.Values[cfg.TargetKey] = body
+
+		// Proceed to the next middleware or handler
+		next()
+	}
 }

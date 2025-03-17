@@ -48,10 +48,11 @@ func (r *Router) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 //   - path: The route path, relative to the group's prefix
 //   - handler: The handler function to execute for matching requests
 //   - middleware: Optional route-specific middleware functions
-func (g *Group) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (g *Group) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
 	g.router.Get(fullPath, handler, allMiddleware...)
+	return g
 }
 
 // Post registers a handler for POST requests on the group's path prefix.
@@ -61,10 +62,11 @@ func (g *Group) Get(path string, handler HandlerFunc, middleware ...MiddlewareFu
 //   - path: The route path, relative to the group's prefix
 //   - handler: The handler function to execute for matching requests
 //   - middleware: Optional route-specific middleware functions
-func (g *Group) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (g *Group) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
 	g.router.Post(fullPath, handler, allMiddleware...)
+	return g
 }
 
 // Put registers a handler for PUT requests on the group's path prefix.
@@ -74,10 +76,11 @@ func (g *Group) Post(path string, handler HandlerFunc, middleware ...MiddlewareF
 //   - path: The route path, relative to the group's prefix
 //   - handler: The handler function to execute for matching requests
 //   - middleware: Optional route-specific middleware functions
-func (g *Group) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (g *Group) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
 	g.router.Put(fullPath, handler, allMiddleware...)
+	return g
 }
 
 // Delete registers a handler for DELETE requests on the group's path prefix.
@@ -87,10 +90,11 @@ func (g *Group) Put(path string, handler HandlerFunc, middleware ...MiddlewareFu
 //   - path: The route path, relative to the group's prefix
 //   - handler: The handler function to execute for matching requests
 //   - middleware: Optional route-specific middleware functions
-func (g *Group) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (g *Group) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
 	g.router.Delete(fullPath, handler, allMiddleware...)
+	return g
 }
 
 // Patch registers a handler for PATCH requests on the group's path prefix.
@@ -100,10 +104,11 @@ func (g *Group) Delete(path string, handler HandlerFunc, middleware ...Middlewar
 //   - path: The route path, relative to the group's prefix
 //   - handler: The handler function to execute for matching requests
 //   - middleware: Optional route-specific middleware functions
-func (g *Group) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (g *Group) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
 	g.router.Patch(fullPath, handler, allMiddleware...)
+	return g
 }
 
 // Options registers a handler for OPTIONS requests on the group's path prefix.
@@ -113,10 +118,11 @@ func (g *Group) Patch(path string, handler HandlerFunc, middleware ...Middleware
 //   - path: The route path, relative to the group's prefix
 //   - handler: The handler function to execute for matching requests
 //   - middleware: Optional route-specific middleware functions
-func (g *Group) Options(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (g *Group) Options(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
 	g.router.Options(fullPath, handler, allMiddleware...)
+	return g
 }
 
 // Head registers a handler for HEAD requests on the group's path prefix.
@@ -126,10 +132,11 @@ func (g *Group) Options(path string, handler HandlerFunc, middleware ...Middlewa
 //   - path: The route path, relative to the group's prefix
 //   - handler: The handler function to execute for matching requests
 //   - middleware: Optional route-specific middleware functions
-func (g *Group) Head(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (g *Group) Head(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
 	g.router.Head(fullPath, handler, allMiddleware...)
+	return g
 }
 
 // Handle registers a handler for the specified HTTP method on the group's path prefix.
@@ -140,10 +147,11 @@ func (g *Group) Head(path string, handler HandlerFunc, middleware ...MiddlewareF
 //   - path: The route path, relative to the group's prefix
 //   - handler: The handler function to execute for matching requests
 //   - middleware: Optional route-specific middleware functions
-func (g *Group) Handle(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (g *Group) Handle(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
 	g.router.Handle(method, fullPath, handler, allMiddleware...)
+	return g
 }
 
 // WebSocket registers a WebSocket handler on the group's path prefix.
@@ -153,10 +161,11 @@ func (g *Group) Handle(method, path string, handler HandlerFunc, middleware ...M
 //   - path: The route path, relative to the group's prefix
 //   - handler: The WebSocket handler function to execute for matching requests
 //   - middleware: Optional route-specific middleware functions
-func (g *Group) WebSocket(path string, handler WebSocketHandler, middleware ...MiddlewareFunc) {
+func (g *Group) WebSocket(path string, handler WebSocketHandler, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
 	g.router.WebSocket(fullPath, handler, allMiddleware...)
+	return g
 }
 
 // Group creates a sub-group with an additional prefix and optional middleware.
@@ -183,8 +192,9 @@ func (g *Group) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 //
 // Parameters:
 //   - middleware: The middleware functions to add
-func (g *Group) Use(middleware ...MiddlewareFunc) {
+func (g *Group) Use(middleware ...MiddlewareFunc) *Group {
 	g.middleware = append(g.middleware, middleware...)
+	return g
 }
 
 // normalizePath ensures paths start with a slash and don't end with one.

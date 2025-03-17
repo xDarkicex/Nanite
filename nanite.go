@@ -18,6 +18,10 @@ import (
 
 // ### Core Types and Data Structures
 
+// ErrorMiddlewareFunc defines the signature for error handling middleware.
+// It takes an error and a Context to handle errors in the request pipeline.
+type ErrorMiddlewareFunc func(err error, ctx *Context, next func())
+
 // HandlerFunc defines the signature for HTTP request handlers.
 // It takes a Context pointer to process the request and send a response.
 type HandlerFunc func(*Context)
@@ -124,14 +128,15 @@ type RadixNode struct {
 
 // Router is the main router type that manages HTTP and WebSocket requests.
 type Router struct {
-	trees        map[string]*RadixNode             // Routing trees by HTTP method
-	pool         sync.Pool                         // Pool for reusing Context instances
-	mutex        sync.RWMutex                      // Mutex for thread-safe middleware updates
-	middleware   []MiddlewareFunc                  // Global middleware stack
-	config       *Config                           // Router configuration
-	httpClient   *http.Client                      // HTTP client for proxying or external requests
-	staticRoutes map[string]map[string]staticRoute // method -> exact path -> handler
-	routeCache   *LRUCache                         // Route cache
+	trees           map[string]*RadixNode             // Routing trees by HTTP method
+	pool            sync.Pool                         // Pool for reusing Context instances
+	mutex           sync.RWMutex                      // Mutex for thread-safe middleware updates
+	errorMiddleware []ErrorMiddlewareFunc             // Error handling middleware stack
+	middleware      []MiddlewareFunc                  // Global middleware stack
+	config          *Config                           // Router configuration
+	httpClient      *http.Client                      // HTTP client for proxying or external requests
+	staticRoutes    map[string]map[string]staticRoute // method -> exact path -> handler
+	routeCache      *LRUCache                         // Route cache
 }
 
 // ### Router Initialization
@@ -202,43 +207,51 @@ func (r *Router) Use(middleware ...MiddlewareFunc) {
 // ### Route Registration
 
 // Get registers a handler for GET requests on the specified path.
-func (r *Router) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (r *Router) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Router {
 	r.addRoute("GET", path, handler, middleware...)
+	return r
 }
 
 // Post registers a handler for POST requests on the specified path.
-func (r *Router) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (r *Router) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Router {
 	r.addRoute("POST", path, handler, middleware...)
+	return r
 }
 
 // Put registers a handler for PUT requests on the specified path.
-func (r *Router) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (r *Router) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Router {
 	r.addRoute("PUT", path, handler, middleware...)
+	return r
 }
 
 // Delete registers a handler for DELETE requests on the specified path.
-func (r *Router) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (r *Router) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Router {
 	r.addRoute("DELETE", path, handler, middleware...)
+	return r
 }
 
 // Patch registers a handler for PATCH requests on the specified path.
-func (r *Router) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (r *Router) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Router {
 	r.addRoute("PATCH", path, handler, middleware...)
+	return r
 }
 
 // Options registers a handler for OPTIONS requests on the specified path.
-func (r *Router) Options(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (r *Router) Options(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Router {
 	r.addRoute("OPTIONS", path, handler, middleware...)
+	return r
 }
 
 // Head registers a handler for HEAD requests on the specified path.
-func (r *Router) Head(path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (r *Router) Head(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Router {
 	r.addRoute("HEAD", path, handler, middleware...)
+	return r
 }
 
 // Handle registers a handler for the specified HTTP method and path.
-func (r *Router) Handle(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
+func (r *Router) Handle(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Router {
 	r.addRoute(method, path, handler, middleware...)
+	return r
 }
 
 // ### Server Start Methods
@@ -283,14 +296,15 @@ func (r *Router) StartTLS(port, certFile, keyFile string) error {
 // ### WebSocket Support
 
 // WebSocket registers a WebSocket handler for the specified path.
-func (r *Router) WebSocket(path string, handler WebSocketHandler, middleware ...MiddlewareFunc) {
+func (r *Router) WebSocket(path string, handler WebSocketHandler, middleware ...MiddlewareFunc) *Router {
 	r.addRoute("GET", path, r.wrapWebSocketHandler(handler), middleware...)
+	return r
 }
 
 // ### Static File Serving
 
 // ServeStatic serves static files from the specified root directory under the given prefix.
-func (r *Router) ServeStatic(prefix, root string) {
+func (r *Router) ServeStatic(prefix, root string) *Router {
 	if !strings.HasPrefix(prefix, "/") {
 		prefix = "/" + prefix
 	}
@@ -300,6 +314,7 @@ func (r *Router) ServeStatic(prefix, root string) {
 	}
 	r.addRoute("GET", prefix+"/*", handler)
 	r.addRoute("HEAD", prefix+"/*", handler)
+	return r
 }
 
 // ### Helper Functions
@@ -417,7 +432,7 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 // 3. Monitoring for context cancellation and timeouts
 // 4. Finding the appropriate handler for the request path
 // 5. Executing the middleware/handler pipeline
-// 6. Handling any panics or errors during processing
+// 6. Handling any panics or errors during processing with error middleware
 // 7. Ensuring all resources are properly released
 //
 // The implementation is optimized for high throughput with minimal allocations
@@ -425,7 +440,6 @@ func (r *Router) findHandlerAndMiddleware(method, path string) (HandlerFunc, []P
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Initialize response writer chain with tracking and buffering
 	trackedWriter := WrapResponseWriter(w)
-
 	// Get content type from response headers or request Accept header
 	contentType := w.Header().Get("Content-Type")
 	if contentType == "" {
@@ -437,17 +451,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	bufferedWriter := newBufferedResponseWriter(trackedWriter, contentType, r.config)
 	defer bufferedWriter.Close()
-
 	// Get a context from the pool and initialize it with a single Reset call
 	ctx := r.pool.Get().(*Context)
 	ctx.Reset(bufferedWriter, req)
-
 	// Ensure context is returned to pool when done
 	defer func() {
 		ctx.CleanupPooledResources()
 		r.pool.Put(ctx)
 	}()
-
 	// Set up context cancellation monitoring
 	reqCtx := req.Context()
 	if reqCtx.Done() != nil {
@@ -491,13 +502,33 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	ctx.ParamsCount = len(params)
 
+	// Make router configuration available to middleware
+	ctx.Values["routerConfig"] = r.config
+
 	// Set up panic recovery
 	defer func() {
 		if err := recover(); err != nil {
 			ctx.Abort()
 			if !trackedWriter.Written() {
-				if r.config.ErrorHandler != nil {
-					r.config.ErrorHandler(ctx, fmt.Errorf("%v", err))
+				// Convert panic value to error
+				var errValue error
+				switch e := err.(type) {
+				case error:
+					errValue = e
+				default:
+					errValue = fmt.Errorf("%v", err)
+				}
+
+				r.mutex.RLock()
+				hasErrorMiddleware := len(r.errorMiddleware) > 0
+				r.mutex.RUnlock()
+
+				if hasErrorMiddleware {
+					r.mutex.RLock()
+					executeErrorMiddlewareChain(errValue, ctx, r.errorMiddleware)
+					r.mutex.RUnlock()
+				} else if r.config.ErrorHandler != nil {
+					r.config.ErrorHandler(ctx, errValue)
 				} else {
 					http.Error(trackedWriter, "Internal Server Error", http.StatusInternalServerError)
 				}
@@ -514,8 +545,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	executeMiddlewareChain(ctx, handler, r.middleware)
 	r.mutex.RUnlock()
 
-	// Handle aborted requests that haven't written a response
-	if ctx.IsAborted() && !trackedWriter.Written() {
+	// Check if the context contains an error to be handled by error middleware
+	if err := ctx.GetError(); err != nil && !trackedWriter.Written() {
+		r.mutex.RLock()
+		hasErrorMiddleware := len(r.errorMiddleware) > 0
+		r.mutex.RUnlock()
+
+		if hasErrorMiddleware {
+			r.mutex.RLock()
+			executeErrorMiddlewareChain(err, ctx, r.errorMiddleware)
+			r.mutex.RUnlock()
+		} else if r.config.ErrorHandler != nil {
+			r.config.ErrorHandler(ctx, err)
+		}
+	} else if ctx.IsAborted() && !trackedWriter.Written() {
+		// Handle aborted requests that haven't written a response
 		if r.config.NotFoundHandler != nil {
 			r.config.NotFoundHandler(ctx)
 		} else {
