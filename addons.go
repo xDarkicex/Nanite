@@ -1012,18 +1012,6 @@ func (w *BufferedResponseWriter) Flush() {
 	}
 }
 
-// Close returns the buffer to the pool
-func (w *BufferedResponseWriter) Close() {
-	if w == nil {
-		return
-	}
-	if w.buffer != nil {
-		w.Flush()
-		bufferPool.Put(w.buffer)
-		w.buffer = nil
-	}
-}
-
 // Close flushes any remaining data and returns the buffer to the pool.
 // This method should be called after all writing is complete, typically
 // using defer to ensure proper cleanup even in error conditions.
