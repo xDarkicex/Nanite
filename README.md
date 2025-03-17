@@ -1,7 +1,7 @@
 # Nanite
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/xDarkicex/Nanite.svg)](https://pkg.go.dev/github.com/xDarkicex/Nanite)
-[![Go Report Card](https://goreportcard.com/badge/github.com/xDarkicex/Nanite)](https://goreportcard.com/report/github.com/xDarkicex/Nanite) 
+[![Go Reference](https://pkg.go.dev/badge/github.com/xDarkicex/nanite.svg)](https://pkg.go.dev/github.com/xDarkicex/nanite)
+[![Go Report Card](https://goreportcard.com/badge/github.com/xDarkicex/nanite)](https://goreportcard.com/report/github.com/xDarkicex/nanite) 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 Nanite is a lightweight, high-performance HTTP router for Go. It's designed to be developer-friendly, inspired by Express.js, while delivering exceptional performance through advanced optimization techniques.
