@@ -42,7 +42,7 @@ type Param struct {
 type Context struct {
 	Writer         http.ResponseWriter    // Response writer for sending data
 	Request        *http.Request          // Incoming HTTP request
-	Params         [5]Param               // Fixed-size array for route parameters
+	Params         [10]Param              // Fixed-size array for route parameters (change 10 to high amount for more params)
 	ParamsCount    int                    // Number of parameters used
 	Values         map[string]interface{} // General-purpose value storage
 	ValidationErrs ValidationErrors       // Validation errors, if any
