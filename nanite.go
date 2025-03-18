@@ -1,6 +1,18 @@
-// Package nanite provides a lightweight, high-performance HTTP router for Go.
-// It is designed to be developer-friendly, inspired by Express.js, and optimized
-// for speed and efficiency in routing, grouping, middleware handling, and WebSocket support.
+// Package nanite provides a high-performance HTTP router with Express-like ergonomics.
+// Features:
+//   - Static + dynamic routing with O(1) and O(log n) lookups
+//   - Middleware chaining with zero-allocation context pooling
+//   - WebSocket support with auto-configuration
+//   - Production-ready TLS/graceful shutdown
+//   - LRU-cached routes for parameter-heavy workloads
+//
+// Quick Start:
+//
+//	router := nanite.New()
+//	router.Get("/hello/:name", func(c *nanite.Context) {
+//	    c.Text(200, "Hello "+c.Param("name"))
+//	})
+//	router.Start(":8080")
 package nanite
 
 import (
