@@ -18,27 +18,85 @@ import (
 
 // ### Core Types and Data Structures
 
-// ErrorMiddlewareFunc defines the signature for error handling middleware.
-// It takes an error and a Context to handle errors in the request pipeline.
+// ErrorMiddlewareFunc handles errors occurring during request processing.
+// Receives:
+// - err: The captured error
+// - ctx: Current request context
+// - next: Function to proceed to next error handler
+//
+// Use to implement centralized error handling, logging, or error response formatting.
+// Chain multiple error handlers to create layered error processing pipelines.
+//
+// Example:
+//
+//	router.ErrorMiddleware(func(err error, ctx *nanite.Context, next func()) {
+//	    log.Error().Err(err).Str("path", ctx.Path()).Send()
+//	    next() // Proceed to next error handler
+//	})
 type ErrorMiddlewareFunc func(err error, ctx *Context, next func())
 
-// HandlerFunc defines the signature for HTTP request handlers.
-// It takes a Context pointer to process the request and send a response.
+// HandlerFunc processes HTTP requests and generates responses.
+// Receives request context containing all request/response state.
+//
+// Primary interface for implementing route endpoint logic. Responsible for:
+// - Reading request data
+// - Processing business logic
+// - Writing response headers/body
+// - Managing request cancellation
+//
+// Example:
+//
+//	func helloHandler(ctx *nanite.Context) {
+//	    ctx.Text(200, "Hello "+ctx.Query("name"))
+//	}
 type HandlerFunc func(*Context)
 
-// WebSocketHandler defines the signature for WebSocket handlers.
-// It processes WebSocket connections using a connection and context.
+// WebSocketHandler manages active WebSocket connections.
+// Receives:
+// - conn: Upgraded WebSocket connection (manage read/write loops)
+// - ctx: Initial connection context with request details
+//
+// Implement to handle real-time communication patterns:
+// - Message broadcasting
+// - Connection state management
+// - Protocol negotiation
+//
+// Example:
+//
+//	func wsHandler(conn *websocket.Conn, ctx *nanite.Context) {
+//	    defer conn.Close()
+//	    for {
+//	        msg, _ := conn.ReadMessage()
+//	        conn.WriteMessage(websocket.TextMessage, []byte("Echo: "+string(msg)))
+//	    }
+//	}
 type WebSocketHandler func(*websocket.Conn, *Context)
 
-// MiddlewareFunc defines the signature for middleware functions.
-// It takes a Context and a next function to control request flow.
+// MiddlewareFunc intercepts and processes HTTP requests in a chain.
+// Receives:
+// - ctx: Current request context
+// - next: Function to advance to next middleware/handler
+//
+// Use for:
+// - Authentication/authorization
+// - Request logging
+// - Response compression
+// - Headers manipulation
+//
+// Example:
+//
+//	func timingMiddleware(ctx *nanite.Context, next func()) {
+//	    start := time.Now()
+//	    next()
+//	    log.Printf("Request took %v", time.Since(start))
+//	}
 type MiddlewareFunc func(*Context, func())
 
-// Param represents a route parameter with a key-value pair.
-// Fields are aligned for simplicity and cache efficiency.
+// Param represents a URL path parameter extracted from dynamic routes.
+// Optimized memory layout (2x 16B = 32B total per param for cache alignment).
 type Param struct {
-	Key   string // Parameter name
-	Value string // Parameter value
+	Key   string // Parameter name as defined in route pattern (e.g., ":id")
+	Value string // Value extracted from request path (raw string)
 }
 
 // Context represents the environment for an HTTP request/response cycle in the Nanite router.
@@ -120,50 +178,69 @@ func (ve ValidationErrors) Error() string {
 
 // ### Router Configuration
 
-// Config controls router behavior and performance.
-// Production-ready defaults provided; tune for specific workloads.
+// Config controls router behavior and performance characteristics.
+// Provides production-sensible defaults while allowing granular optimization.
 //
-// Field ordering optimized for memory efficiency (hot fields first).
+// Usage:
+//
+//	router := nanite.New()
+//	cfg := router.Config()
+//	cfg.RouteCacheSize = 2048  // Adjust for high-parameter routes
+//	cfg.AdaptiveBuffering = true // Enable for unpredictable traffic patterns
 type Config struct {
 	// --- Request Handling ---
-	// Custom 404 handler (nil = default plain text)
-	// Example: NotFoundHandler = renderCustom404
+	// Custom 404 Not Found handler. When nil, returns "404 Not Found" with empty body.
+	// Example: cfg.NotFoundHandler = func(ctx *Context) { ctx.JSON(404, map[string]string{"error":"Not found"}) }
 	NotFoundHandler HandlerFunc
 
-	// Global error handler (nil = log with request ID + stack)
+	// Global error handler for uncaught panics and returned errors.
+	// Default: Logs error with request ID and stack trace to stderr.
+	// Example: cfg.ErrorHandler = func(ctx *Context, err error) { sentry.CaptureException(err) }
 	ErrorHandler func(*Context, error)
 
 	// --- WebSocket Configuration ---
-	// WS upgrade settings - clone instead of replace
+	// WebSocket connection upgrader configuration. Modify fields directly rather than
+	// replacing the entire upgrader to maintain protocol compliance.
+	// Example: cfg.Upgrader.ReadBufferSize = 8192
 	Upgrader *websocket.Upgrader
 
-	// Tuning: timeouts, buffers, pings
+	// WebSocket-specific performance and timeout settings.
+	// See WebSocketConfig docs for granular control over ping intervals and I/O buffers.
 	WebSocket *WebSocketConfig
 
 	// --- Routing Optimization ---
-	// Cached dynamic routes (LRU)
-	// Default 1024, Min 128, Set ≈ QPS×params
+	// Maximum cached parameterized routes (LRU eviction).
+	// Set to (requests per second) × (average parameters per route).
+	// Default: 1024, Minimum: 128, Production: 2048-4096 for API-heavy workloads
 	RouteCacheSize int
 
-	// Max params per route (security: ≤64)
-	// Pre-allocates storage, Default 10
+	// Maximum allowed URL parameters per route. Excess triggers panic during registration.
+	// Security: Limits parameter injection vectors. Maximum enforced: 64.
+	// Default: 10, High: 20-25 for complex API paths
 	RouteMaxParams int
 
 	// --- Memory Management ---
-	// Base response buffer (bytes)
-	// Default 4KB, Typical 2KB-16KB
+	// Initial buffer size for response writers (bytes).
+	// Set to 90th percentile of response sizes for optimal balance.
+	// Default: 4096, API: 2048, File Server: 16384
 	DefaultBufferSize int
 
-	// Text responses (JSON/HTML) buffer
-	// Default 4KB, Set ≈ max response size
+	// Buffer size for text responses (JSON/XML/HTML).
+	// Set to maximum expected response size for common endpoints.
+	// Default: 4096, High: 8192-16384 for large API payloads
 	TextBufferSize int
 
-	// Binary responses (images/files) buffer
-	// Default 8KB, Set ≈ avg asset size
+	// Buffer size for binary responses (images/PDFs/protobuf).
+	// Align with typical asset sizes in your application.
+	// Default: 8192, High: 32768-65536 for media serving
 	BinaryBufferSize int
 
-	// Auto-tune buffers: ~20% memory saving
-	// Costs 5-10% CPU, enable for spiky traffic
+	// Enable dynamic buffer sizing based on recent response patterns.
+	// Recommended for:
+	// - Unpredictable payload sizes
+	// - Bursty traffic patterns
+	// - Memory-constrained environments
+	// Tradeoff: Adds 5-10% CPU overhead for buffer analytics
 	AdaptiveBuffering bool
 }
 
