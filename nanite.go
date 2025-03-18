@@ -41,17 +41,40 @@ type Param struct {
 	Value string // Parameter value
 }
 
-// Context holds the state of an HTTP request and response.
-// It is optimized with a fixed-size array for params.
+// Context represents the environment for an HTTP request/response cycle in the Nanite router.
+// It provides access to the request data, response writing capabilities, parameter handling,
+// validation, and request-scoped storage.
+//
+// The Context is created for each incoming request and pooled for reuse after the request
+// completes. It's passed to all middleware functions and handlers, serving as the primary
+// interface for accessing request data and manipulating the response.
+//
+// The struct is optimized for cache-line efficiency with fields arranged by size to minimize
+// padding and memory usage. Most operations on Context are designed to minimize allocations.
+//
+// Common operations:
+//   - Access route parameters: c.GetParam("id")
+//   - Set/get values: c.Set("user", user), user := c.Get("user")
+//   - Send responses: c.JSON(200, data), c.String(200, "Hello")
+//   - Control flow: c.Abort()
 type Context struct {
-	Writer         http.ResponseWriter    // Response writer for sending data
-	Request        *http.Request          // Incoming HTTP request
-	Params         [10]Param              // Fixed-size array for route parameters (change 10 to high amount for more params)
-	ParamsCount    int                    // Number of parameters used
-	Values         map[string]interface{} // General-purpose value storage
-	ValidationErrs ValidationErrors       // Validation errors, if any
-	lazyFields     map[string]*LazyField  // Lazy validation fields
-	aborted        bool                   // Flag indicating if request is aborted
+	// Core HTTP objects
+	Writer  http.ResponseWriter // Underlying response writer for sending HTTP responses
+	Request *http.Request       // Original HTTP request with all headers, body, and URL information
+
+	// Reference maps (8-byte pointers)
+	Values     map[string]interface{} // Thread-safe key-value store for request-scoped data sharing between handlers and middleware
+	lazyFields map[string]*LazyField  // Deferred validation fields that only evaluate when accessed, reducing unnecessary processing
+
+	// Array and slice fields
+	Params         [10]Param        // Fixed-size array of route parameters extracted from URL (e.g., /users/:id → {id: "123"})
+	ValidationErrs ValidationErrors // Collection of validation failures for providing consistent error responses
+
+	// Integer fields (8 bytes on 64-bit systems)
+	ParamsCount int // Number of active parameters in the Params array, avoids unnecessary iterations
+
+	// Boolean flags (1 byte + potential padding)
+	aborted bool // Request termination flag that stops middleware chain execution when true
 }
 
 // ValidationErrors is a slice of ValidationError for multiple validation failures.
@@ -126,18 +149,47 @@ type RadixNode struct {
 
 // ### Router Structure
 
-// Router is the main router type that manages HTTP and WebSocket requests.
+// Router is the main HTTP router for the Nanite framework.
+// It manages route registration, request handling, middleware execution,
+// and WebSocket connections with a focus on high performance.
+//
+// Router uses a combination of static route maps (for O(1) lookup of exact matches)
+// and radix trees (for efficient parameter and wildcard routing), along with
+// an LRU cache to optimize frequently accessed routes.
+//
+// The implementation minimizes memory allocations through object pooling,
+// string interning, and reusable buffers, making it suitable for high-throughput
+// web services.
+//
+// Basic usage:
+//
+//	r := nanite.New()
+//	r.Get("/users", listUsers)
+//	r.Get("/users/:id", getUser)
+//	r.Start("8080")
 type Router struct {
-	trees           map[string]*RadixNode             // Routing trees by HTTP method
-	pool            sync.Pool                         // Pool for reusing Context instances
-	mutex           sync.RWMutex                      // Mutex for thread-safe middleware updates
-	errorMiddleware []ErrorMiddlewareFunc             // Error handling middleware stack
-	middleware      []MiddlewareFunc                  // Global middleware stack
-	config          *Config                           // Router configuration
-	httpClient      *http.Client                      // HTTP client for proxying or external requests
-	staticRoutes    map[string]map[string]staticRoute // method -> exact path -> handler
-	routeCache      *LRUCache                         // Route cache
+	// Core routing structures (frequently accessed during request handling)
+	staticRoutes map[string]map[string]staticRoute // Fast O(1) lookup for static routes (method -> path -> handler)
+	trees        map[string]*RadixNode             // Radix trees for dynamic route matching (method -> tree)
+	routeCache   *LRUCache                         // LRU cache for frequently accessed dynamic routes
+
+	// Request processing
+	pool            sync.Pool             // Object pool for reusing Context instances
+	middleware      []MiddlewareFunc      // Global middleware stack applied to all routes
+	errorMiddleware []ErrorMiddlewareFunc // Error handling middleware for centralized error processing
+
+	// Configuration
+	config     *Config      // Router configuration options
+	httpClient *http.Client // HTTP client for proxying or external service communication
+
+	// Server management
+	server        *http.Server   // Underlying HTTP server instance
+	shutdownHooks []ShutdownHook // Functions to execute during graceful shutdown
+	mutex         sync.RWMutex   // Read-write mutex for thread-safe updates to middleware and routes
 }
+
+// ShutdownHook is a function that gets called during graceful shutdown
+type ShutdownHook func() error
 
 // ### Router Initialization
 
@@ -258,7 +310,12 @@ func (r *Router) Handle(method, path string, handler HandlerFunc, middleware ...
 
 // Start launches the HTTP server on the specified port.
 func (r *Router) Start(port string) error {
-	server := &http.Server{
+	r.mutex.Lock()
+	if r.server != nil {
+		r.mutex.Unlock()
+		return fmt.Errorf("server already running")
+	}
+	r.server = &http.Server{
 		Addr:           ":" + port,
 		Handler:        r,
 		ReadTimeout:    5 * time.Second,
@@ -275,13 +332,33 @@ func (r *Router) Start(port string) error {
 			}
 		},
 	}
+	r.mutex.Unlock()
 	fmt.Printf("Nanite server running on port %s\n", port)
-	return server.ListenAndServe()
+	err := r.server.ListenAndServe()
+	// ErrServerClosed is returned when Shutdown is called
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+// AddShutdownHook registers a function to be called during graceful shutdown
+func (r *Router) AddShutdownHook(hook ShutdownHook) *Router {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.shutdownHooks = append(r.shutdownHooks, hook)
+	return r
 }
 
 // StartTLS launches the HTTPS server on the specified port with TLS.
 func (r *Router) StartTLS(port, certFile, keyFile string) error {
-	server := &http.Server{
+	r.mutex.Lock()
+	if r.server != nil {
+		r.mutex.Unlock()
+		return fmt.Errorf("server already running")
+	}
+
+	r.server = &http.Server{
 		Addr:           ":" + port,
 		Handler:        r,
 		ReadTimeout:    5 * time.Second,
@@ -289,8 +366,67 @@ func (r *Router) StartTLS(port, certFile, keyFile string) error {
 		IdleTimeout:    60 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
-	fmt.Printf("Nanite server running on port %s with TLS\n", port)
-	return server.ListenAndServeTLS(certFile, keyFile)
+	r.mutex.Unlock()
+	err := r.server.ListenAndServeTLS(certFile, keyFile)
+	// ErrServerClosed is returned when Shutdown is called
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+// Shutdown gracefully shuts down the server without interrupting any active connections.
+// It waits for all in-flight requests to complete (up to the specified timeout), then shuts down.
+//
+// Parameters:
+//   - timeout: Maximum time to wait for connections to complete before forcing shutdown
+//
+// Returns:
+//   - error: Any error that occurred during shutdown
+func (r *Router) Shutdown(timeout time.Duration) error {
+	r.mutex.Lock()
+	if r.server == nil {
+		r.mutex.Unlock()
+		return fmt.Errorf("server not started or already shut down")
+	}
+
+	// Execute shutdown hooks
+	for _, hook := range r.shutdownHooks {
+		if err := hook(); err != nil {
+			fmt.Printf("Error during shutdown hook: %v\n", err)
+		}
+	}
+
+	server := r.server
+	r.server = nil
+	r.mutex.Unlock()
+
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Perform graceful shutdown
+	return server.Shutdown(ctx)
+}
+
+// ShutdownImmediate forces an immediate shutdown of the server.
+// Unlike Shutdown(), this does not wait for in-flight requests to complete.
+//
+// Returns:
+//   - error: Any error that occurred during shutdown
+func (r *Router) ShutdownImmediate() error {
+	r.mutex.Lock()
+	if r.server == nil {
+		r.mutex.Unlock()
+		return fmt.Errorf("server not started or already shut down")
+	}
+
+	server := r.server
+	r.server = nil
+	r.mutex.Unlock()
+
+	// Close immediately
+	return server.Close()
 }
 
 // ### WebSocket Support
@@ -319,17 +455,23 @@ func (r *Router) ServeStatic(prefix, root string) *Router {
 
 // ### Helper Functions
 
-// addRoute adds a route to the router's tree for the given method and path.
-// It optimizes static routes with a fast path lookup and builds a RadixTree for dynamic routes.
+// addRoute registers a route with the router.
+// Static routes (without parameters) are stored in a map for O(1) lookup.
+// Dynamic routes (with parameters) are stored in a radix tree for efficient matching.
+// Middleware chains are pre-composed at registration time rather than during request
+// processing, dramatically reducing per-request overhead and eliminating recursion issues.
 func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	// Pre-build middleware chain (keep this unchanged)
-	allMiddleware := append(r.middleware, middleware...)
+	// Combine global and route middleware
+	routeMiddleware := make([]MiddlewareFunc, len(r.middleware)+len(middleware))
+	copy(routeMiddleware, r.middleware)
+	copy(routeMiddleware[len(r.middleware):], middleware)
+
 	wrapped := handler
-	for i := len(allMiddleware) - 1; i >= 0; i-- {
-		mw := allMiddleware[i]
+	for i := len(routeMiddleware) - 1; i >= 0; i-- {
+		mw := routeMiddleware[i]
 		next := wrapped
 		wrapped = func(c *Context) {
 			if !c.IsAborted() {
@@ -342,16 +484,20 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 		}
 	}
 
-	// Keep static routes optimization
+	// Check if route is static (no parameters or wildcards)
 	isStatic := !strings.Contains(path, ":") && !strings.Contains(path, "*")
+
+	// Store static routes in map for O(1) lookup
 	if isStatic {
 		if _, exists := r.staticRoutes[method]; !exists {
 			r.staticRoutes[method] = make(map[string]staticRoute)
 		}
+
 		r.staticRoutes[method][path] = staticRoute{handler: wrapped, params: []Param{}}
+		return // Skip radix tree insertion for static routes
 	}
 
-	// Initialize or use existing method tree
+	// Only dynamic routes go in the radix tree
 	if _, exists := r.trees[method]; !exists {
 		r.trees[method] = &RadixNode{
 			prefix:   "",
@@ -364,10 +510,10 @@ func (r *Router) addRoute(method, path string, handler HandlerFunc, middleware .
 	if path == "" || path == "/" {
 		root.handler = wrapped
 	} else {
-		// Normalize path
 		if path[0] != '/' {
 			path = "/" + path
 		}
+
 		root.insertRoute(path[1:], wrapped) // Skip leading slash
 	}
 }

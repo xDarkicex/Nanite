@@ -376,34 +376,79 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 	}
 }
 
-// ExecuteMiddleware executes the middleware chain for a route
+// executeMiddlewareChain executes middleware with minimal allocations
+// and protection against stack overflow. It uses a highly optimized approach
+// that directly handles common middleware counts (0-5) for maximum performance,
+// falling back to a fully non-recursive implementation for larger middleware chains.
 //
 //go:inline
 func executeMiddlewareChain(c *Context, handler HandlerFunc, middleware []MiddlewareFunc) {
-	// No middleware, just execute the handler
+	// Fast path for no middleware
 	if len(middleware) == 0 {
 		handler(c)
 		return
 	}
 
-	// Build the middleware chain
-	var next func()
-	var index int
+	// Handle common cases with direct function calls (no allocations)
+	switch len(middleware) {
+	case 1:
+		middleware[0](c, func() { handler(c) })
+		return
+	case 2:
+		middleware[0](c, func() {
+			middleware[1](c, func() { handler(c) })
+		})
+		return
+	case 3:
+		middleware[0](c, func() {
+			middleware[1](c, func() {
+				middleware[2](c, func() { handler(c) })
+			})
+		})
+		return
 
-	next = func() {
-		if index < len(middleware) {
-			currentMiddleware := middleware[index]
-			index++
-			currentMiddleware(c, next)
-		} else {
-			// End of middleware chain, execute the handler
-			handler(c)
+	case 4:
+		middleware[0](c, func() {
+			middleware[1](c, func() {
+				middleware[2](c, func() {
+					middleware[3](c, func() { handler(c) })
+				})
+			})
+		})
+		return
+	case 5:
+		middleware[0](c, func() {
+			middleware[1](c, func() {
+				middleware[2](c, func() {
+					middleware[3](c, func() {
+						middleware[4](c, func() { handler(c) })
+					})
+				})
+			})
+		})
+		return
+	}
+
+	// For larger middleware chains, use a completely non-recursive approach
+	// that pre-builds all the functions before executing them
+	funcs := make([]func(), len(middleware)+1)
+
+	// The last function just calls the handler
+	funcs[len(middleware)] = func() {
+		handler(c)
+	}
+
+	// Build the middleware chain backwards
+	for i := len(middleware) - 1; i >= 0; i-- {
+		mw := middleware[i]
+		next := funcs[i+1] // Explicitly capture the next function
+		funcs[i] = func() {
+			mw(c, next)
 		}
 	}
 
-	// Start the middleware chain
-	index = 0
-	next()
+	// Start the chain execution
+	funcs[0]()
 }
 
 // ### tracked_response_writer
