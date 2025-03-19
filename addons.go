@@ -1,4 +1,3 @@
-// Package nanite provides a lightweight, high-performance HTTP router for Go.
 package nanite
 
 import (
@@ -14,25 +13,12 @@ import (
 	"sync/atomic"
 )
 
-// Group represents a route group with shared path prefix and middleware.
-// It allows organizing routes into logical sections and applying
-// common middleware to multiple routes efficiently.
 type Group struct {
-	router     *Router          // Reference to the parent router
-	prefix     string           // Path prefix for all routes in this group
-	middleware []MiddlewareFunc // Middleware applied to all routes in this group
+	middleware []MiddlewareFunc // Middleware stack for all group routes (hot: accessed every request)
+	prefix     string           // Path segment prepended to all child routes (e.g., "/api")
+	router     *Router          // Reference to root router instance (cold: set at creation)
 }
 
-// Group creates a new route group with the given path prefix and optional middleware.
-// All routes registered on this group will have the prefix prepended to their paths
-// and the middleware applied before their handlers.
-//
-// Parameters:
-//   - prefix: The path prefix for all routes in this group
-//   - middleware: Optional middleware functions to apply to all routes in this group
-//
-// Returns:
-//   - *Group: A new route group instance
 func (r *Router) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 	return &Group{
 		router:     r,
@@ -41,13 +27,6 @@ func (r *Router) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 	}
 }
 
-// Get registers a handler for GET requests on the group's path prefix.
-// The path is normalized and combined with the group's prefix.
-//
-// Parameters:
-//   - path: The route path, relative to the group's prefix
-//   - handler: The handler function to execute for matching requests
-//   - middleware: Optional route-specific middleware functions
 func (g *Group) Get(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
@@ -55,13 +34,6 @@ func (g *Group) Get(path string, handler HandlerFunc, middleware ...MiddlewareFu
 	return g
 }
 
-// Post registers a handler for POST requests on the group's path prefix.
-// The path is normalized and combined with the group's prefix.
-//
-// Parameters:
-//   - path: The route path, relative to the group's prefix
-//   - handler: The handler function to execute for matching requests
-//   - middleware: Optional route-specific middleware functions
 func (g *Group) Post(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
@@ -69,13 +41,6 @@ func (g *Group) Post(path string, handler HandlerFunc, middleware ...MiddlewareF
 	return g
 }
 
-// Put registers a handler for PUT requests on the group's path prefix.
-// The path is normalized and combined with the group's prefix.
-//
-// Parameters:
-//   - path: The route path, relative to the group's prefix
-//   - handler: The handler function to execute for matching requests
-//   - middleware: Optional route-specific middleware functions
 func (g *Group) Put(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
@@ -83,13 +48,6 @@ func (g *Group) Put(path string, handler HandlerFunc, middleware ...MiddlewareFu
 	return g
 }
 
-// Delete registers a handler for DELETE requests on the group's path prefix.
-// The path is normalized and combined with the group's prefix.
-//
-// Parameters:
-//   - path: The route path, relative to the group's prefix
-//   - handler: The handler function to execute for matching requests
-//   - middleware: Optional route-specific middleware functions
 func (g *Group) Delete(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
@@ -97,13 +55,6 @@ func (g *Group) Delete(path string, handler HandlerFunc, middleware ...Middlewar
 	return g
 }
 
-// Patch registers a handler for PATCH requests on the group's path prefix.
-// The path is normalized and combined with the group's prefix.
-//
-// Parameters:
-//   - path: The route path, relative to the group's prefix
-//   - handler: The handler function to execute for matching requests
-//   - middleware: Optional route-specific middleware functions
 func (g *Group) Patch(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
@@ -111,13 +62,6 @@ func (g *Group) Patch(path string, handler HandlerFunc, middleware ...Middleware
 	return g
 }
 
-// Options registers a handler for OPTIONS requests on the group's path prefix.
-// The path is normalized and combined with the group's prefix.
-//
-// Parameters:
-//   - path: The route path, relative to the group's prefix
-//   - handler: The handler function to execute for matching requests
-//   - middleware: Optional route-specific middleware functions
 func (g *Group) Options(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
@@ -125,13 +69,6 @@ func (g *Group) Options(path string, handler HandlerFunc, middleware ...Middlewa
 	return g
 }
 
-// Head registers a handler for HEAD requests on the group's path prefix.
-// The path is normalized and combined with the group's prefix.
-//
-// Parameters:
-//   - path: The route path, relative to the group's prefix
-//   - handler: The handler function to execute for matching requests
-//   - middleware: Optional route-specific middleware functions
 func (g *Group) Head(path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
@@ -139,14 +76,6 @@ func (g *Group) Head(path string, handler HandlerFunc, middleware ...MiddlewareF
 	return g
 }
 
-// Handle registers a handler for the specified HTTP method on the group's path prefix.
-// The path is normalized and combined with the group's prefix.
-//
-// Parameters:
-//   - method: The HTTP method (GET, POST, PUT, etc.)
-//   - path: The route path, relative to the group's prefix
-//   - handler: The handler function to execute for matching requests
-//   - middleware: Optional route-specific middleware functions
 func (g *Group) Handle(method, path string, handler HandlerFunc, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
@@ -154,13 +83,6 @@ func (g *Group) Handle(method, path string, handler HandlerFunc, middleware ...M
 	return g
 }
 
-// WebSocket registers a WebSocket handler on the group's path prefix.
-// The path is normalized and combined with the group's prefix.
-//
-// Parameters:
-//   - path: The route path, relative to the group's prefix
-//   - handler: The WebSocket handler function to execute for matching requests
-//   - middleware: Optional route-specific middleware functions
 func (g *Group) WebSocket(path string, handler WebSocketHandler, middleware ...MiddlewareFunc) *Group {
 	fullPath := normalizePath(g.prefix + path)
 	allMiddleware := append(g.middleware, middleware...)
@@ -168,15 +90,6 @@ func (g *Group) WebSocket(path string, handler WebSocketHandler, middleware ...M
 	return g
 }
 
-// Group creates a sub-group with an additional prefix and optional middleware.
-// The new group inherits all middleware from the parent group.
-//
-// Parameters:
-//   - prefix: The additional path prefix for the sub-group
-//   - middleware: Optional middleware functions specific to the sub-group
-//
-// Returns:
-//   - *Group: A new route group instance
 func (g *Group) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 	fullPrefix := normalizePath(g.prefix + prefix)
 	allMiddleware := append(g.middleware, middleware...)
@@ -187,25 +100,12 @@ func (g *Group) Group(prefix string, middleware ...MiddlewareFunc) *Group {
 	}
 }
 
-// Use adds middleware to the group.
-// These middleware functions will be applied to all routes in this group.
-//
-// Parameters:
-//   - middleware: The middleware functions to add
+// - middleware: The middleware functions to add
 func (g *Group) Use(middleware ...MiddlewareFunc) *Group {
 	g.middleware = append(g.middleware, middleware...)
 	return g
 }
 
-// normalizePath ensures paths start with a slash and don't end with one.
-// This optimized version avoids unnecessary allocations for common cases.
-//
-// Parameters:
-//   - path: The path to normalize
-//
-// Returns:
-//   - string: The normalized path
-//
 //go:inline
 func normalizePath(path string) string {
 	// Fast path for empty string
@@ -260,31 +160,16 @@ func normalizePath(path string) string {
 
 // ### Validation Middleware
 
-// ValidationMiddleware creates middleware that validates request data using the provided validation chains.
-// It handles parsing of form data and JSON bodies for common HTTP methods (POST, PUT, PATCH, DELETE)
-// and applies the validation rules specified in the chains.
-//
-// The middleware uses an optimized zero-copy approach with io.TeeReader for JSON body processing,
-// which reduces memory usage by reading the request body only once while simultaneously making it
-// available for JSON parsing and preserving it for downstream handlers.
-//
-// Parameters:
-//   - chains: ValidationChain objects containing field names and validation rules
-//
-// Returns:
-//   - MiddlewareFunc: Middleware function that can be registered with the router
 func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 	return func(ctx *Context, next func()) {
 		if ctx.IsAborted() {
 			return
 		}
 
-		// Handle request data parsing for POST, PUT, PATCH, DELETE methods
 		if len(chains) > 0 && (ctx.Request.Method == "POST" || ctx.Request.Method == "PUT" ||
 			ctx.Request.Method == "PATCH" || ctx.Request.Method == "DELETE") {
 			contentType := ctx.Request.Header.Get("Content-Type")
 
-			// Parse form data (application/x-www-form-urlencoded or multipart/form-data)
 			if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
 				strings.HasPrefix(contentType, "multipart/form-data") {
 				if err := ctx.Request.ParseForm(); err != nil {
@@ -298,7 +183,6 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 					return
 				}
 
-				// Store form data in ctx.Values
 				formData := getMap()
 				for key, values := range ctx.Request.Form {
 					if len(values) == 1 {
@@ -310,12 +194,24 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 				ctx.Values["formData"] = formData
 			}
 
-			// Parse JSON body (application/json)
 			if strings.HasPrefix(contentType, "application/json") {
-				// Determine max JSON size
-				maxJSONSize := int64(10 << 20) // 10MB default
+				originalBody := ctx.Request.Body
+				defer func() {
+					if err := originalBody.Close(); err != nil {
+						// Only handle error if response not yet committed
+						if !ctx.IsWritten() {
+							ve := getValidationError("", fmt.Sprintf("body closure error: %v", err))
+							if ctx.ValidationErrs == nil {
+								ctx.ValidationErrs = make(ValidationErrors, 0, 1)
+							}
+							ctx.ValidationErrs = append(ctx.ValidationErrs, *ve)
+							putValidationError(ve)
+							ctx.JSON(http.StatusInternalServerError, map[string]interface{}{"errors": ctx.ValidationErrs})
+						}
+					}
+				}()
 
-				// Check Content-Length if available for early rejection
+				maxJSONSize := int64(10 << 20)
 				if ctx.Request.ContentLength > maxJSONSize && ctx.Request.ContentLength != -1 {
 					ve := getValidationError("", "request body too large")
 					if ctx.ValidationErrs == nil {
@@ -327,18 +223,13 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 					return
 				}
 
-				// Get buffer from pool
 				buffer := bufferPool.Get().(*bytes.Buffer)
 				buffer.Reset()
 				defer bufferPool.Put(buffer)
 
-				// Create a limited reader to prevent DoS from excessively large bodies
-				limitedBody := io.LimitReader(ctx.Request.Body, maxJSONSize)
-
-				// Use TeeReader to simultaneously read the body once while writing to buffer
+				limitedBody := io.LimitReader(originalBody, maxJSONSize)
 				teeBody := io.TeeReader(limitedBody, buffer)
 
-				// Parse the JSON directly from the tee reader without additional buffering
 				var body map[string]interface{}
 				if err := json.NewDecoder(teeBody).Decode(&body); err != nil {
 					ve := getValidationError("", "invalid JSON")
@@ -351,36 +242,24 @@ func ValidationMiddleware(chains ...*ValidationChain) MiddlewareFunc {
 					return
 				}
 
-				// Close original body and replace with buffered copy for downstream handlers
-				ctx.Request.Body.Close()
 				ctx.Request.Body = io.NopCloser(bytes.NewReader(buffer.Bytes()))
-
-				// Store parsed body in context
 				ctx.Values["body"] = body
 			}
 
-			// Attach validation rules to LazyFields
 			for _, chain := range chains {
-				field := ctx.Field(chain.field)                   // Get or create the LazyField
-				field.rules = append(field.rules, chain.rules...) // Append validation rules
+				field := ctx.Field(chain.field)
+				field.rules = append(field.rules, chain.rules...)
 			}
 		}
 
-		// Proceed to the next middleware or handler
 		next()
 
-		// Return validation chains to the pool when done
 		for _, chain := range chains {
 			chain.Release()
 		}
 	}
 }
 
-// executeMiddlewareChain executes middleware with minimal allocations
-// and protection against stack overflow. It uses a highly optimized approach
-// that directly handles common middleware counts (0-5) for maximum performance,
-// falling back to a fully non-recursive implementation for larger middleware chains.
-//
 //go:inline
 func executeMiddlewareChain(c *Context, handler HandlerFunc, middleware []MiddlewareFunc) {
 	// Fast path for no middleware
@@ -645,9 +524,6 @@ var stringInterner = struct {
 }
 
 // internString returns a single canonical instance of the given string.
-// If the string has been seen before, the stored version is returned.
-// Otherwise, the input string becomes the canonical version.
-// This reduces memory usage when the same strings are frequently used.
 //
 //go:inline
 func internString(s string) string {
@@ -669,9 +545,6 @@ func internString(s string) string {
 }
 
 // NewLRUCache creates a new LRU cache with the specified capacity and maxParams.
-// The capacity determines how many entries can be stored before eviction begins.
-// The maxParams parameter configures the maximum number of parameters per entry.
-// The function applies reasonable defaults and bounds if invalid values are provided.
 func NewLRUCache(capacity, maxParams int) *LRUCache {
 	// Set defaults if invalid values provided
 	if capacity <= 0 {
@@ -707,10 +580,6 @@ func NewLRUCache(capacity, maxParams int) *LRUCache {
 	return c
 }
 
-// Add adds a new entry to the cache or updates an existing one.
-// If the key already exists, the entry is updated and moved to the front of the LRU list.
-// If the key doesn't exist, the least recently used entry is replaced with the new entry.
-// This method is thread-safe and optimizes memory usage through string interning and slice pooling.
 func (c *LRUCache) Add(method, path string, handler HandlerFunc, params []Param) {
 	// Intern strings to reduce allocations
 	method = internString(method)
@@ -731,14 +600,13 @@ func (c *LRUCache) Add(method, path string, handler HandlerFunc, params []Param)
 				putParamSlice(entry.params)
 			}
 			newParams := getParamSlice(len(params))
+			newParams = newParams[:len(params)]
 			copy(newParams, params)
 			entry.params = newParams
 		}
 		c.moveToFront(idx)
 		return
 	}
-
-	// New entry: reuse the tail slot
 	idx := c.tail
 	entry := &c.entries[idx]
 	oldKey := entry.key
@@ -749,23 +617,17 @@ func (c *LRUCache) Add(method, path string, handler HandlerFunc, params []Param)
 	if entry.params != nil {
 		putParamSlice(entry.params)
 	}
-
-	// Update the existing key struct instead of creating a new one
 	entry.key.method = method
 	entry.key.path = path
 	entry.handler = handler
-	// Allocate and copy params
 	newParams := getParamSlice(len(params))
+	newParams = newParams[:len(params)]
 	copy(newParams, params)
 	entry.params = newParams
 	c.indices[entry.key] = idx
 	c.moveToFront(idx)
 }
 
-// Get retrieves an entry from the cache.
-// It returns the handler function, parameters, and a boolean indicating whether the entry was found.
-// If the entry is found, it's moved to the front of the LRU list.
-// This method is thread-safe and includes panic recovery for robustness.
 func (c *LRUCache) Get(method, path string) (HandlerFunc, []Param, bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -791,6 +653,7 @@ func (c *LRUCache) Get(method, path string) (HandlerFunc, []Param, bool) {
 	var params []Param
 	if len(entry.params) > 0 {
 		params = getParamSlice(len(entry.params))
+		params = params[:len(entry.params)]
 		copy(params, entry.params)
 	} else {
 		params = nil
@@ -804,9 +667,6 @@ func (c *LRUCache) Get(method, path string) (HandlerFunc, []Param, bool) {
 	return handler, params, true
 }
 
-// moveToFront moves an entry to the front of the list (most recently used).
-// This maintains the LRU ordering of the cache entries.
-// The method includes bounds checking and panic recovery for robustness.
 func (c *LRUCache) moveToFront(idx int) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -847,9 +707,6 @@ func (c *LRUCache) moveToFront(idx int) {
 	c.head = idx
 }
 
-// Clear removes all entries from the cache and returns param slices to pools.
-// It resets the cache to its initial state while properly cleaning up resources.
-// This method is thread-safe and includes panic recovery for robustness.
 func (c *LRUCache) Clear() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -881,9 +738,6 @@ func (c *LRUCache) Clear() {
 	atomic.StoreInt64(&c.misses, 0)
 }
 
-// Stats returns cache hit/miss statistics.
-// It provides the number of cache hits, misses, and the hit ratio.
-// These values are useful for monitoring and tuning cache performance.
 func (c *LRUCache) Stats() (hits, misses int64, ratio float64) {
 	hits = atomic.LoadInt64(&c.hits)
 	misses = atomic.LoadInt64(&c.misses)
@@ -894,7 +748,6 @@ func (c *LRUCache) Stats() (hits, misses int64, ratio float64) {
 	return
 }
 
-// SetRouteCacheOptions configures the route cache with the specified size and maximum parameters
 func (r *Router) SetRouteCacheOptions(size, maxParams int) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
@@ -912,18 +765,12 @@ func (r *Router) SetRouteCacheOptions(size, maxParams int) {
 	}
 }
 
-//------------------------------------------------------------------------------
-// Buffered Response Writer
-//------------------------------------------------------------------------------
-
-// Buffer size constants for different content types
 const (
 	DefaultBufferSize = 4096 // Default buffer size for most content types
 	TextBufferSize    = 2048 // Smaller buffer size for text-based content for faster flushing
 	BinaryBufferSize  = 8192 // Larger buffer size for binary content to minimize syscalls
 )
 
-// BufferedResponseWriter wraps TrackedResponseWriter with a buffer
 type BufferedResponseWriter struct {
 	*TrackedResponseWriter
 	buffer     *bytes.Buffer
@@ -931,8 +778,6 @@ type BufferedResponseWriter struct {
 	autoFlush  bool
 }
 
-// contentTypeMatch checks if content type matches a specific prefix without allocations
-//
 //go:inline
 func contentTypeMatch(contentType []byte, prefix []byte) bool {
 	if len(contentType) < len(prefix) {
@@ -947,9 +792,6 @@ func contentTypeMatch(contentType []byte, prefix []byte) bool {
 	return true
 }
 
-// stripContentParams strips content type parameters without allocations
-// Example: "text/html; charset=utf-8" → "text/html"
-//
 //go:inline
 func stripContentParams(contentType []byte) []byte {
 	for i := 0; i < len(contentType); i++ {
@@ -960,21 +802,6 @@ func stripContentParams(contentType []byte) []byte {
 	return contentType
 }
 
-// newBufferedResponseWriter creates a new BufferedResponseWriter with content-aware buffering.
-// It optimizes the buffer size based on the content type:
-//   - Text-based content (text/*, application/json, etc.): Smaller buffers for faster initial flush
-//   - Binary content (image/*, video/*, etc.): Larger buffers to minimize syscalls
-//   - Other content types: Default buffer size
-//
-// If a config is provided with explicit buffer sizes, those will be used instead of the defaults.
-//
-// Parameters:
-//   - w: The TrackedResponseWriter to wrap
-//   - contentType: The MIME type of the response content
-//   - config: Router configuration containing buffer size settings
-//
-// Returns:
-//   - A new BufferedResponseWriter configured with an appropriate buffer size
 func newBufferedResponseWriter(w *TrackedResponseWriter, contentType string, config *Config) *BufferedResponseWriter {
 	// Get buffer from pool and ensure it's empty
 	buffer := bufferPool.Get().(*bytes.Buffer)
@@ -1050,7 +877,6 @@ func newBufferedResponseWriter(w *TrackedResponseWriter, contentType string, con
 	}
 }
 
-// Write buffers the data and uses adaptive flushing based on content type and buffer fullness
 func (w *BufferedResponseWriter) Write(b []byte) (int, error) {
 	if !w.headerWritten {
 		w.WriteHeader(http.StatusOK)
@@ -1110,12 +936,6 @@ func (w *BufferedResponseWriter) Flush() {
 	}
 }
 
-// Close flushes any remaining data and returns the buffer to the pool.
-// This method should be called after all writing is complete, typically
-// using defer to ensure proper cleanup even in error conditions.
-//
-// After Close is called, the BufferedResponseWriter should not be used again.
-// Multiple calls to Close are safe and subsequent calls have no effect.
 func (w *BufferedResponseWriter) Close() {
 	if w == nil {
 		return

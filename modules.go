@@ -6,9 +6,6 @@ import (
 	"strings"
 )
 
-// GetIntParam retrieves a route parameter as an integer.
-// Returns the parameter value as an int and any parsing error.
-// If the parameter doesn't exist, it returns 0 and an error.
 func (c *Context) GetIntParam(key string) (int, error) {
 	val, ok := c.GetParam(key)
 	if !ok {
@@ -17,9 +14,6 @@ func (c *Context) GetIntParam(key string) (int, error) {
 	return strconv.Atoi(val)
 }
 
-// GetIntParamOrDefault retrieves a route parameter as an integer.
-// Returns the parameter value as an int or the provided default if
-// the parameter doesn't exist or parsing fails.
 func (c *Context) GetIntParamOrDefault(key string, defaultVal int) int {
 	val, err := c.GetIntParam(key)
 	if err != nil {
@@ -28,9 +22,6 @@ func (c *Context) GetIntParamOrDefault(key string, defaultVal int) int {
 	return val
 }
 
-// GetFloatParam retrieves a route parameter as a float64.
-// Returns the parameter value as a float64 and any parsing error.
-// If the parameter doesn't exist, it returns 0.0 and an error.
 func (c *Context) GetFloatParam(key string) (float64, error) {
 	val, ok := c.GetParam(key)
 	if !ok {
@@ -39,9 +30,6 @@ func (c *Context) GetFloatParam(key string) (float64, error) {
 	return strconv.ParseFloat(val, 64)
 }
 
-// GetFloatParamOrDefault retrieves a route parameter as a float64.
-// Returns the parameter value as a float64 or the provided default if
-// the parameter doesn't exist or parsing fails.
 func (c *Context) GetFloatParamOrDefault(key string, defaultVal float64) float64 {
 	val, err := c.GetFloatParam(key)
 	if err != nil {
@@ -50,9 +38,6 @@ func (c *Context) GetFloatParamOrDefault(key string, defaultVal float64) float64
 	return val
 }
 
-// GetBoolParam retrieves a route parameter as a boolean.
-// Returns the parameter value as a bool and any parsing error.
-// If the parameter doesn't exist, it returns false and an error.
 func (c *Context) GetBoolParam(key string) (bool, error) {
 	val, ok := c.GetParam(key)
 	if !ok {
@@ -61,9 +46,6 @@ func (c *Context) GetBoolParam(key string) (bool, error) {
 	return strconv.ParseBool(val)
 }
 
-// GetBoolParamOrDefault retrieves a route parameter as a boolean.
-// Returns the parameter value as a bool or the provided default if
-// the parameter doesn't exist or parsing fails.
 func (c *Context) GetBoolParamOrDefault(key string, defaultVal bool) bool {
 	val, err := c.GetBoolParam(key)
 	if err != nil {
@@ -72,9 +54,6 @@ func (c *Context) GetBoolParamOrDefault(key string, defaultVal bool) bool {
 	return val
 }
 
-// GetUintParam retrieves a route parameter as an unsigned integer.
-// Returns the parameter value as a uint64 and any parsing error.
-// If the parameter doesn't exist, it returns 0 and an error.
 func (c *Context) GetUintParam(key string) (uint64, error) {
 	val, ok := c.GetParam(key)
 	if !ok {
@@ -83,9 +62,6 @@ func (c *Context) GetUintParam(key string) (uint64, error) {
 	return strconv.ParseUint(val, 10, 64)
 }
 
-// GetUintParamOrDefault retrieves a route parameter as an unsigned integer.
-// Returns the parameter value as a uint64 or the provided default if
-// the parameter doesn't exist or parsing fails.
 func (c *Context) GetUintParamOrDefault(key string, defaultVal uint64) uint64 {
 	val, err := c.GetUintParam(key)
 	if err != nil {
@@ -111,12 +87,6 @@ type RouteInfo struct {
 	Middleware int    // Number of middleware functions
 }
 
-// ListRoutes returns information about all registered routes.
-// This method helps with debugging and documentation by providing
-// a complete list of all routes registered with the router.
-//
-// Returns:
-//   - []RouteInfo: A slice of route information structs
 func (r *Router) ListRoutes() []RouteInfo {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()

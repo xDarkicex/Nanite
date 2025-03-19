@@ -8,10 +8,63 @@ import (
 	"slices"
 )
 
+// responseWriter wraps http.ResponseWriter to track write state
+type responseWriter struct {
+	http.ResponseWriter      // Embedded interface
+	status              int  // Tracks HTTP status code
+	written             int  // Tracks total bytes written
+	headerWritten       bool // Tracks if headers were flushed
+}
+
+// WriteHeader captures the status code and marks headers as written
+func (w *responseWriter) WriteHeader(status int) {
+	if !w.headerWritten {
+		w.status = status
+		w.headerWritten = true
+		w.ResponseWriter.WriteHeader(status)
+	}
+}
+
+// Write tracks bytes written and ensures headers are marked
+func (w *responseWriter) Write(data []byte) (int, error) {
+	if !w.headerWritten {
+		w.WriteHeader(http.StatusOK) // Default 200 if not set
+	}
+	n, err := w.ResponseWriter.Write(data)
+	w.written += n
+	return n, err
+}
+
+// Status returns the HTTP response status code
+func (w *responseWriter) Status() int {
+	return w.status
+}
+
+// Written returns the total number of bytes written to the client
+func (w *responseWriter) Written() int {
+	return w.written
+}
+
 // ### Context Methods
 
-// Set stores a value in the context's value map.
-//
+func (c *Context) IsWritten() bool {
+	if rw, ok := c.Writer.(interface {
+		Status() int
+		Written() int
+	}); ok {
+		return rw.Status() != 0 || rw.Written() > 0
+	}
+	// Fallback for non-wrapped writers
+	return c.Writer.(interface{ Header() http.Header }).Header().Get("X-Is-Written") == "true"
+}
+
+func (c *Context) WrittenBytes() int {
+	if rw, ok := c.Writer.(interface{ Written() int }); ok {
+		return rw.Written()
+	}
+	return -1
+}
+
 //go:inline
 func (c *Context) Set(key string, value interface{}) {
 	c.Values[key] = value
@@ -166,30 +219,37 @@ func (c *Context) ClearValues() {
 	clear(c.Values)
 }
 
-// Reset prepares the context for reuse with a new request.
-// It efficiently resets all state while maintaining allocated memory structures,
-// significantly reducing per-request initialization time by approximately 10-20ns.
-//
-// Parameters:
-//   - w: The response writer for this request
-//   - r: The HTTP request object
 func (c *Context) Reset(w http.ResponseWriter, r *http.Request) {
-	// Reset request-specific fields
-	c.Writer = w
+	// Reuse or create response writer wrapper
+	if rw, ok := w.(*responseWriter); ok {
+		// Fast path: reset existing wrapper (~3ns)
+		rw.ResponseWriter = w
+		rw.status = 0
+		rw.written = 0
+		rw.headerWritten = false
+		c.Writer = rw
+	} else {
+		// Slow path: create new wrapper (~15ns)
+		c.Writer = &responseWriter{
+			ResponseWriter: w,
+			status:         0,
+			written:        0,
+			headerWritten:  false,
+		}
+	}
+
+	// Common reset operations (~22ns)
 	c.Request = r
+	for i := 0; i < len(c.Params); i++ {
+		c.Params[i] = Param{}
+	}
 	c.ParamsCount = 0
 	c.aborted = false
-
-	// Clear values map without reallocation
 	clear(c.Values)
-
-	// Clean up and clear lazy fields
 	for k, field := range c.lazyFields {
 		putLazyField(field)
 		delete(c.lazyFields, k)
 	}
-
-	// Reset validation errors
 	c.ValidationErrs = nil
 }
 
@@ -347,13 +407,6 @@ func (c *Context) GetError() error {
 	return nil
 }
 
-// executeErrorMiddlewareChain executes the chain of error middleware functions.
-// It creates a recursive closure that proceeds through the middleware stack.
-//
-// Parameters:
-//   - err: The error being handled
-//   - c: The request context
-//   - middleware: Slice of error middleware functions to execute
 func executeErrorMiddlewareChain(err error, c *Context, middleware []ErrorMiddlewareFunc) {
 	var index int
 	var next func()
@@ -370,14 +423,6 @@ func executeErrorMiddlewareChain(err error, c *Context, middleware []ErrorMiddle
 	next()
 }
 
-// UseError adds one or more error middleware functions to the router's error middleware stack.
-// These middleware functions will be executed when an error occurs during request processing.
-//
-// Parameters:
-//   - middleware: One or more ErrorMiddlewareFunc functions to execute when errors occur
-//
-// Returns:
-//   - *Router: The router instance for method chaining
 func (r *Router) UseError(middleware ...ErrorMiddlewareFunc) *Router {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
